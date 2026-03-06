@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.log
+
+.env
+venv/
+.venv/
+
+data/zamena.db
+data/*.json
+data/user_ids.txt
+
+.vscode/
+.idea/
+
+# Cursor / editor metadata (если появятся в репозитории)
+.cursor/
+.history/
+
