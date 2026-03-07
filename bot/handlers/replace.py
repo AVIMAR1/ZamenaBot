@@ -167,13 +167,6 @@ async def creator_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
     r["requested_by_username"] = None
     storage.save_replacement(r)
 
-    author = storage.get_user(author_id) or {}
-    author["was_replaced_count"] = author.get("was_replaced_count", 0) + 1
-    storage.save_user(author_id, author)
-    taker = storage.get_user(taker_id) or {}
-    taker["replaced_count"] = taker.get("replaced_count", 0) + 1
-    storage.save_user(taker_id, taker)
-
     contact_taker = f"@{taker_username}" if taker_username else f"ID: {taker_id}"
     contact_author = f"@{author_username}" if author_username else f"ID: {author_id}"
     base_info = (
@@ -246,14 +239,10 @@ async def taker_refuse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(taker_id) != str(uid):
         await query.answer("Только принявший может отказаться.", show_alert=True)
         return
+    if r.get("start_notified"):
+        await query.answer("Смена уже началась, отказаться от замены нельзя.", show_alert=True)
+        return
     author_id = r.get("author_id")
-    if r.get("confirmed"):
-        author = storage.get_user(author_id) or {}
-        author["was_replaced_count"] = max(0, author.get("was_replaced_count", 0) - 1)
-        storage.save_user(author_id, author)
-        taker = storage.get_user(uid) or {}
-        taker["replaced_count"] = max(0, taker.get("replaced_count", 0) - 1)
-        storage.save_user(uid, taker)
     r["confirmed"] = False
     r["taken_by_id"] = None
     r["taken_by_username"] = None
@@ -283,14 +272,9 @@ async def undo_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(r.get("author_id")) != str(uid):
         await query.answer("Только автор может отменить подтверждение.", show_alert=True)
         return
-    author_id = r.get("author_id")
-    taker_id = r.get("taken_by_id")
-    author = storage.get_user(author_id) or {}
-    author["was_replaced_count"] = max(0, author.get("was_replaced_count", 0) - 1)
-    storage.save_user(author_id, author)
-    taker = storage.get_user(taker_id) or {}
-    taker["replaced_count"] = max(0, taker.get("replaced_count", 0) - 1)
-    storage.save_user(taker_id, taker)
+    if r.get("start_notified"):
+        await query.answer("Смена уже началась, отменить подтверждение нельзя.", show_alert=True)
+        return
     r["confirmed"] = False
     r["taken_by_id"] = None
     r["taken_by_username"] = None

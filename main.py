@@ -3,6 +3,7 @@
 
 import logging
 from datetime import datetime, time, date, timedelta
+from zoneinfo import ZoneInfo
 
 from telegram import Update
 from telegram.ext import (
@@ -31,6 +32,9 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+# Локальный часовой пояс объекта (Гродно, Беларусь — без сезонных сдвигов).
+LOCAL_TZ = ZoneInfo("Europe/Minsk")
 
 
 async def noop_callback(update: Update, context):
@@ -148,8 +152,9 @@ async def digest_job(context):
 
 async def shifts_start_job(context):
     """Отслеживание начала смен: уведомления по согласованным/несогласованным заменам."""
-    now = datetime.now()
-    today = date.today()
+    # Используем локальный часовой пояс, чтобы отработка не зависела от таймзоны сервера.
+    now = datetime.now(LOCAL_TZ)
+    today = now.date()
     today_iso = today.isoformat()
     # Берём все активные замены, включая те, на которые уже есть заявка.
     all_replacements = storage.get_replacements(active_only=True, exclude_requested=False)
@@ -174,7 +179,7 @@ async def shifts_start_job(context):
             h, m = map(int, start_str.split(":", 1))
         except Exception:
             continue
-        start_dt = datetime.combine(today, time(h, m))
+        start_dt = datetime.combine(today, time(h, m, tzinfo=LOCAL_TZ))
         # Считаем, что «начало смены» — окно в 10 минут от старта.
         if not (start_dt <= now <= start_dt + timedelta(minutes=10)):
             continue
@@ -185,7 +190,15 @@ async def shifts_start_job(context):
         date_text = r.get("date_text", "")
 
         if r.get("confirmed") and taker_id:
-            # Согласованная замена.
+            # Согласованная замена — считаем, что смена реально состоялась.
+            # Обновляем статистику только в момент начала смены.
+            author = storage.get_user(author_id) or {}
+            author["was_replaced_count"] = author.get("was_replaced_count", 0) + 1
+            storage.save_user(author_id, author)
+            taker = storage.get_user(taker_id) or {}
+            taker["replaced_count"] = taker.get("replaced_count", 0) + 1
+            storage.save_user(taker_id, taker)
+
             try:
                 await context.bot.send_message(
                     chat_id=author_id,

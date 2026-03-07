@@ -2,7 +2,8 @@
 """Сценарий «Найти замену»: смена, кем заменить, календарь, публикация."""
 
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, time
+from zoneinfo import ZoneInfo
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -20,6 +21,27 @@ from keyboards import (
 
 def _date_text(d: date) -> str:
     return d.strftime("%d.%m.%Y")
+
+
+LOCAL_TZ = ZoneInfo("Europe/Minsk")
+
+
+def _shift_already_started(city: str, company: str, obj: str, shift_key: str, d: date) -> bool:
+    """Проверяет, началась ли уже смена для выбранной даты (по локальному времени)."""
+    now = datetime.now(LOCAL_TZ)
+    if d != now.date():
+        return False
+    shift_info = storage.get_object_shift(city, company, obj, shift_key)
+    if shift_info and shift_info.get("start_time"):
+        start_str = shift_info["start_time"]
+    else:
+        start_str = "09:00" if shift_key == "day" else "21:00"
+    try:
+        h, m = map(int, start_str.split(":", 1))
+    except Exception:
+        return False
+    start_dt = datetime.combine(d, time(h, m, tzinfo=LOCAL_TZ))
+    return now >= start_dt
 
 
 async def _publish_from_pending(query, context: ContextTypes.DEFAULT_TYPE, rid: str, pending: dict):
@@ -190,6 +212,9 @@ async def callback_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if d < today:
             await query.answer("Нельзя выбрать дату в прошлом.", show_alert=True)
             return
+        if _shift_already_started(city, company, obj, shift_key, d):
+            await query.answer("Нельзя искать замену на смену, которая уже началась.", show_alert=True)
+            return
         pending["date_from"] = d.isoformat()
         pending["date_to"] = d.isoformat()
         pending["date_text"] = _date_text(d)
@@ -208,6 +233,9 @@ async def callback_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         d_from = date(year, month, day)
         if d_from < today:
             await query.answer("Нельзя выбрать дату в прошлом.", show_alert=True)
+            return
+        if _shift_already_started(city, company, obj, shift_key, d_from):
+            await query.answer("Нельзя искать замену на смену, которая уже началась.", show_alert=True)
             return
         pending["date_from"] = d_from.isoformat()
         pending["position"] = position
