@@ -10,9 +10,13 @@ from database import (
     get_user,
     save_user,
     get_all_users,
+    get_users_page,
+    reset_all_users,
     get_replacements,
     get_replacement_by_id,
     save_replacement,
+    update_replacement_usernames,
+    repair_all_replacement_usernames,
     get_my_replacements,
     get_my_responses,
     get_tickets,
@@ -22,6 +26,7 @@ from database import (
     get_companies,
     get_objects,
     get_positions,
+    get_all_positions,
     catalog_add_city,
     catalog_remove_city,
     catalog_add_company,
@@ -42,7 +47,50 @@ from database import (
     get_review_reaction,
     set_review_reaction,
     get_banned_support_users,
+    # Supervisors
+    get_supervisors,
+    add_supervisor,
+    delete_supervisor,
+    get_supervisor_by_id,
+    update_supervisor_username,
+    # Object access
+    get_object_access,
+    set_object_access_mode,
+    add_object_access_chat,
+    remove_object_access_chat,
+    # Friends
+    add_friend,
+    remove_friend,
+    get_friends,
 )
+
+
+def sync_replacement_usernames(replacement: dict):
+    """Подтянуть username полей из users для замены и обновить запись."""
+    rid = replacement.get("id")
+    if not rid:
+        return
+    author_id = replacement.get("author_id")
+    requested_by_id = replacement.get("requested_by_id")
+    taken_by_id = replacement.get("taken_by_id")
+    author_username = None
+    requested_username = None
+    taken_username = None
+    if author_id:
+        u = get_user(int(author_id))
+        author_username = (u.get("username") if u else "") or ""
+    if requested_by_id:
+        u = get_user(int(requested_by_id))
+        requested_username = (u.get("username") if u else "") or ""
+    if taken_by_id:
+        u = get_user(int(taken_by_id))
+        taken_username = (u.get("username") if u else "") or ""
+    update_replacement_usernames(
+        str(rid),
+        author_username=author_username,
+        requested_by_username=requested_username,
+        taken_by_username=taken_username,
+    )
 
 
 def add_user_id(telegram_id: int):

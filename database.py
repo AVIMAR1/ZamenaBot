@@ -31,15 +31,22 @@ def _init_db():
             telegram_id INTEGER PRIMARY KEY,
             city TEXT, company TEXT, object TEXT,
             username TEXT, name TEXT,
+            full_name TEXT,
+            supervisor_id INTEGER,
             replaced_count INTEGER DEFAULT 0,
             was_replaced_count INTEGER DEFAULT 0,
             notify_digest INTEGER DEFAULT 1,
+            notify_new_enabled INTEGER DEFAULT 0,
+            notify_positions TEXT,
+            notify_shift_keys TEXT,
+            banned_until TEXT,
             support_ban_until TEXT,
             support_ban_reason TEXT
         );
         CREATE TABLE IF NOT EXISTS replacements (
             id TEXT PRIMARY KEY,
             author_id INTEGER, author_username TEXT,
+            for_friend_id INTEGER, for_friend_username TEXT, for_friend_full_name TEXT,
             city TEXT, company TEXT, object TEXT, position TEXT,
             shift TEXT, shift_key TEXT, date_from TEXT, date_to TEXT, date_text TEXT,
             active INTEGER DEFAULT 1, confirmed INTEGER DEFAULT 0,
@@ -81,6 +88,35 @@ def _init_db():
             value INTEGER,           -- 1 = like, -1 = dislike
             PRIMARY KEY (review_id, user_id)
         );
+
+        CREATE TABLE IF NOT EXISTS supervisors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            username TEXT,
+            telegram_id INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS object_access (
+            city TEXT,
+            company TEXT,
+            object_name TEXT,
+            require_mode TEXT DEFAULT 'ANY',  -- ANY | ALL
+            PRIMARY KEY (city, company, object_name)
+        );
+
+        CREATE TABLE IF NOT EXISTS object_access_chats (
+            city TEXT,
+            company TEXT,
+            object_name TEXT,
+            chat_id TEXT,            -- '@channel' or numeric id as string
+            PRIMARY KEY (city, company, object_name, chat_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS friends (
+            owner_id INTEGER,
+            friend_id INTEGER,
+            PRIMARY KEY (owner_id, friend_id)
+        );
     """)
     conn.commit()
     _migrate_schema(conn)
@@ -92,8 +128,20 @@ def _migrate_schema(conn: sqlite3.Connection):
     # Users
     cur = conn.execute("PRAGMA table_info(users)")
     cols = {row[1] for row in cur.fetchall()}
+    if "full_name" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN full_name TEXT")
+    if "supervisor_id" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN supervisor_id INTEGER")
     if "notify_digest" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN notify_digest INTEGER DEFAULT 1")
+    if "notify_new_enabled" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN notify_new_enabled INTEGER DEFAULT 0")
+    if "notify_positions" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN notify_positions TEXT")
+    if "notify_shift_keys" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN notify_shift_keys TEXT")
+    if "banned_until" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN banned_until TEXT")
     if "support_ban_until" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN support_ban_until TEXT")
     if "support_ban_reason" not in cols:
@@ -104,6 +152,12 @@ def _migrate_schema(conn: sqlite3.Connection):
     rcols = {row[1] for row in cur.fetchall()}
     if "start_notified" not in rcols:
         conn.execute("ALTER TABLE replacements ADD COLUMN start_notified INTEGER DEFAULT 0")
+    if "for_friend_id" not in rcols:
+        conn.execute("ALTER TABLE replacements ADD COLUMN for_friend_id INTEGER")
+    if "for_friend_username" not in rcols:
+        conn.execute("ALTER TABLE replacements ADD COLUMN for_friend_username TEXT")
+    if "for_friend_full_name" not in rcols:
+        conn.execute("ALTER TABLE replacements ADD COLUMN for_friend_full_name TEXT")
 
     # Object shifts table
     conn.execute("""
@@ -137,6 +191,45 @@ def _migrate_schema(conn: sqlite3.Connection):
             user_id INTEGER,
             value INTEGER,
             PRIMARY KEY (review_id, user_id)
+        )
+    """)
+
+    # Supervisors
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS supervisors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            username TEXT,
+            telegram_id INTEGER
+        )
+    """)
+
+    # Object access requirements
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS object_access (
+            city TEXT,
+            company TEXT,
+            object_name TEXT,
+            require_mode TEXT DEFAULT 'ANY',
+            PRIMARY KEY (city, company, object_name)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS object_access_chats (
+            city TEXT,
+            company TEXT,
+            object_name TEXT,
+            chat_id TEXT,
+            PRIMARY KEY (city, company, object_name, chat_id)
+        )
+    """)
+
+    # Friends
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS friends (
+            owner_id INTEGER,
+            friend_id INTEGER,
+            PRIMARY KEY (owner_id, friend_id)
         )
     """)
     conn.commit()
@@ -213,15 +306,31 @@ def save_user(telegram_id: int, user: dict):
         _get_conn().execute(
             """INSERT OR REPLACE INTO users
                (telegram_id, city, company, object, username, name,
-                replaced_count, was_replaced_count, notify_digest,
+                full_name, supervisor_id,
+                replaced_count, was_replaced_count,
+                notify_digest, notify_new_enabled, notify_positions, notify_shift_keys,
+                banned_until,
                 support_ban_until, support_ban_reason)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (telegram_id, user.get("city"), user.get("company"), user.get("object"),
-             user.get("username", ""), user.get("name", ""),
-             user.get("replaced_count", 0), user.get("was_replaced_count", 0),
-             1 if user.get("notify_digest", True) else 0,
-             user.get("support_ban_until"),
-             user.get("support_ban_reason"))
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                telegram_id,
+                user.get("city"),
+                user.get("company"),
+                user.get("object"),
+                user.get("username", ""),
+                user.get("name", ""),
+                user.get("full_name"),
+                user.get("supervisor_id"),
+                user.get("replaced_count", 0),
+                user.get("was_replaced_count", 0),
+                1 if user.get("notify_digest", True) else 0,
+                1 if user.get("notify_new_enabled", False) else 0,
+                user.get("notify_positions"),
+                user.get("notify_shift_keys"),
+                user.get("banned_until"),
+                user.get("support_ban_until"),
+                user.get("support_ban_reason"),
+            )
         )
         _get_conn().commit()
 
@@ -245,6 +354,162 @@ def get_banned_support_users() -> list:
         )
         rows = cur.fetchall()
     return [dict(r) for r in rows]
+
+
+def reset_all_users():
+    """Удалить всех пользователей из БД (для перерегистрации)."""
+    with _lock:
+        _get_conn().execute("DELETE FROM users")
+        _get_conn().commit()
+
+
+def get_users_page(city: str | None = None, company: str | None = None, obj: str | None = None,
+                   page: int = 0, per_page: int = 10) -> tuple[list, int]:
+    """Пагинация пользователей с фильтром по объекту. Возвращает (users, total)."""
+    where = []
+    params: list[Any] = []
+    if city:
+        where.append("city=?")
+        params.append(city)
+    if company:
+        where.append("company=?")
+        params.append(company)
+    if obj:
+        where.append("object=?")
+        params.append(obj)
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    with _lock:
+        cur = _get_conn().execute(f"SELECT COUNT(*) FROM users {where_sql}", tuple(params))
+        total_row = cur.fetchone()
+        total = int(total_row[0]) if total_row else 0
+        offset = page * per_page
+        cur = _get_conn().execute(
+            f"SELECT * FROM users {where_sql} ORDER BY telegram_id LIMIT ? OFFSET ?",
+            tuple(params + [per_page, offset]),
+        )
+        rows = cur.fetchall()
+    return [dict(r) for r in rows], total
+
+
+# --- Supervisors (администраторы/кураторы) ---
+def get_supervisors() -> list:
+    with _lock:
+        cur = _get_conn().execute("SELECT * FROM supervisors ORDER BY id DESC")
+        return [dict(r) for r in cur.fetchall()]
+
+
+def add_supervisor(title: str, username: str | None = None, telegram_id: int | None = None) -> int:
+    with _lock:
+        cur = _get_conn().execute(
+            "INSERT INTO supervisors (title, username, telegram_id) VALUES (?,?,?)",
+            (title.strip(), (username or "").strip().lstrip("@"), telegram_id),
+        )
+        _get_conn().commit()
+        return int(cur.lastrowid)
+
+
+def delete_supervisor(sid: int):
+    with _lock:
+        _get_conn().execute("DELETE FROM supervisors WHERE id=?", (sid,))
+        _get_conn().execute("UPDATE users SET supervisor_id=NULL WHERE supervisor_id=?", (sid,))
+        _get_conn().commit()
+
+
+def get_supervisor_by_id(sid: int) -> Optional[dict]:
+    with _lock:
+        cur = _get_conn().execute("SELECT * FROM supervisors WHERE id=?", (sid,))
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def update_supervisor_username(sid: int, username: str):
+    username = (username or "").strip().lstrip("@")
+    with _lock:
+        _get_conn().execute(
+            "UPDATE supervisors SET username=? WHERE id=?",
+            (username, sid),
+        )
+        _get_conn().commit()
+
+
+# --- Object access requirements (groups/channels membership) ---
+def get_object_access(city: str, company: str, object_name: str) -> dict:
+    with _lock:
+        cur = _get_conn().execute(
+            "SELECT require_mode FROM object_access WHERE city=? AND company=? AND object_name=?",
+            (city, company, object_name),
+        )
+        row = cur.fetchone()
+        mode = row[0] if row else "ANY"
+        cur = _get_conn().execute(
+            "SELECT chat_id FROM object_access_chats WHERE city=? AND company=? AND object_name=? ORDER BY chat_id",
+            (city, company, object_name),
+        )
+        chats = [r[0] for r in cur.fetchall()]
+    return {"require_mode": mode, "chats": chats}
+
+
+def set_object_access_mode(city: str, company: str, object_name: str, require_mode: str):
+    mode = "ALL" if require_mode == "ALL" else "ANY"
+    with _lock:
+        _get_conn().execute(
+            "INSERT OR REPLACE INTO object_access (city, company, object_name, require_mode) VALUES (?,?,?,?)",
+            (city, company, object_name, mode),
+        )
+        _get_conn().commit()
+
+
+def add_object_access_chat(city: str, company: str, object_name: str, chat_id: str) -> bool:
+    chat_id = chat_id.strip()
+    if not chat_id:
+        return False
+    with _lock:
+        _get_conn().execute(
+            "INSERT OR IGNORE INTO object_access_chats (city, company, object_name, chat_id) VALUES (?,?,?,?)",
+            (city, company, object_name, chat_id),
+        )
+        _get_conn().commit()
+    return True
+
+
+def remove_object_access_chat(city: str, company: str, object_name: str, chat_id: str):
+    with _lock:
+        _get_conn().execute(
+            "DELETE FROM object_access_chats WHERE city=? AND company=? AND object_name=? AND chat_id=?",
+            (city, company, object_name, chat_id),
+        )
+        _get_conn().commit()
+
+
+# --- Friends ---
+def add_friend(owner_id: int, friend_id: int) -> bool:
+    if owner_id == friend_id:
+        return False
+    with _lock:
+        _get_conn().execute(
+            "INSERT OR IGNORE INTO friends (owner_id, friend_id) VALUES (?,?)",
+            (owner_id, friend_id),
+        )
+        _get_conn().commit()
+    return True
+
+
+def remove_friend(owner_id: int, friend_id: int):
+    with _lock:
+        _get_conn().execute("DELETE FROM friends WHERE owner_id=? AND friend_id=?", (owner_id, friend_id))
+        _get_conn().commit()
+
+
+def get_friends(owner_id: int) -> list:
+    with _lock:
+        cur = _get_conn().execute(
+            """SELECT u.* FROM friends f
+               JOIN users u ON u.telegram_id = f.friend_id
+               WHERE f.owner_id=?
+               ORDER BY u.full_name, u.telegram_id""",
+            (owner_id,),
+        )
+        return [dict(r) for r in cur.fetchall()]
 
 
 # --- Replacements ---
@@ -286,14 +551,16 @@ def save_replacement(replacement: dict):
         _get_conn().execute(
             """INSERT OR REPLACE INTO replacements
                (id, author_id, author_username,
+                for_friend_id, for_friend_username, for_friend_full_name,
                 city, company, object, position,
                 shift, shift_key, date_from, date_to, date_text,
                 active, confirmed,
                 taken_by_id, taken_by_username,
                 requested_by_id, requested_by_username,
                 start_notified)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (r.get("id"), r.get("author_id"), r.get("author_username", ""),
+             r.get("for_friend_id"), r.get("for_friend_username", ""), r.get("for_friend_full_name", ""),
              r.get("city"), r.get("company"), r.get("object"), r.get("position"),
              r.get("shift"), r.get("shift_key"), r.get("date_from"), r.get("date_to"), r.get("date_text"),
              1 if r.get("active", True) else 0, 1 if r.get("confirmed") else 0,
@@ -302,6 +569,60 @@ def save_replacement(replacement: dict):
              1 if r.get("start_notified", 0) else 0)
         )
         _get_conn().commit()
+
+
+def update_replacement_usernames(rid: str, author_username: str | None = None,
+                                requested_by_username: str | None = None,
+                                taken_by_username: str | None = None):
+    """Обновить username-поля у замены."""
+    sets = []
+    params: list[Any] = []
+    if author_username is not None:
+        sets.append("author_username=?")
+        params.append(author_username)
+    if requested_by_username is not None:
+        sets.append("requested_by_username=?")
+        params.append(requested_by_username)
+    if taken_by_username is not None:
+        sets.append("taken_by_username=?")
+        params.append(taken_by_username)
+    if not sets:
+        return
+    params.append(rid)
+    with _lock:
+        _get_conn().execute(
+            f"UPDATE replacements SET {', '.join(sets)} WHERE id=?",
+            tuple(params),
+        )
+        _get_conn().commit()
+
+
+def repair_all_replacement_usernames():
+    """Пройтись по replacements и синхронизировать username с таблицей users."""
+    with _lock:
+        cur = _get_conn().execute("SELECT id, author_id, requested_by_id, taken_by_id FROM replacements")
+        rows = cur.fetchall()
+    # вне лока: соберём user->username
+    uids = set()
+    for r in rows:
+        for k in ("author_id", "requested_by_id", "taken_by_id"):
+            if r[k]:
+                uids.add(int(r[k]))
+    user_map: dict[int, str] = {}
+    if uids:
+        with _lock:
+            cur = _get_conn().execute(
+                f"SELECT telegram_id, username FROM users WHERE telegram_id IN ({','.join(['?']*len(uids))})",
+                tuple(uids),
+            )
+            for rr in cur.fetchall():
+                user_map[int(rr[0])] = rr[1] or ""
+    for r in rows:
+        rid = r["id"]
+        au = user_map.get(int(r["author_id"])) if r["author_id"] else None
+        ru = user_map.get(int(r["requested_by_id"])) if r["requested_by_id"] else None
+        tu = user_map.get(int(r["taken_by_id"])) if r["taken_by_id"] else None
+        update_replacement_usernames(rid, author_username=au, requested_by_username=ru, taken_by_username=tu)
 
 
 def get_my_replacements(telegram_id: int, active_only: bool = False) -> list:
@@ -579,6 +900,13 @@ def get_positions(city: str, company: str, object_name: str) -> List[str]:
         cur = _get_conn().execute(
             "SELECT name FROM catalog_positions WHERE city=? AND company=? AND object_name=? ORDER BY name",
             (city, company, object_name))
+        return [r[0] for r in cur.fetchall()]
+
+
+def get_all_positions() -> List[str]:
+    """Все позиции во всех объектах (для фильтров уведомлений)."""
+    with _lock:
+        cur = _get_conn().execute("SELECT DISTINCT name FROM catalog_positions ORDER BY name")
         return [r[0] for r in cur.fetchall()]
 
 

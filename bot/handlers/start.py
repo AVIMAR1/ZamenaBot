@@ -11,6 +11,8 @@ from keyboards import (
     company_kb,
     objects_kb,
     main_menu_kb,
+    supervisors_kb,
+    back_to_main_kb,
 )
 
 
@@ -22,7 +24,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     storage.add_user_id(uid)
 
     existing = storage.get_user(uid)
-    if existing and existing.get("city") and existing.get("company") and existing.get("object"):
+    if (
+        existing
+        and existing.get("city")
+        and existing.get("company")
+        and existing.get("object")
+        and existing.get("full_name")
+        and existing.get("supervisor_id")
+    ):
         await update.message.reply_text(
             "Главное меню. Выберите действие:",
             reply_markup=main_menu_kb(),
@@ -107,8 +116,71 @@ async def callback_object(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user.setdefault("was_replaced_count", 0)
     storage.save_user(uid, user)
 
+    # Если это настройки — возвращаем старый flow. Иначе запускаем продолжение регистрации:
     if context.user_data.pop("settings_flow", None):
         msg = "Профиль обновлён. Главное меню:"
-    else:
-        msg = "Профиль заполнен. Главное меню:"
-    await query.edit_message_text(msg, reply_markup=main_menu_kb())
+        await query.edit_message_text(msg, reply_markup=main_menu_kb())
+        return
+
+    context.user_data["waiting_full_name"] = True
+    await query.edit_message_text(
+        "Регистрация почти завершена.\nВведите ваше ФИО (одним сообщением):",
+        reply_markup=back_to_main_kb(),
+    )
+
+
+async def full_name_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохранение ФИО и выбор администратора/куратора."""
+    if not update.message or not context.user_data.get("waiting_full_name"):
+        return
+    context.user_data.pop("waiting_full_name", None)
+    uid = update.effective_user.id if update.effective_user else 0
+    full_name = (update.message.text or "").strip()
+    if len(full_name) < 5:
+        context.user_data["waiting_full_name"] = True
+        await update.message.reply_text("ФИО слишком короткое. Введите ещё раз:", reply_markup=back_to_main_kb())
+        return
+    user = storage.get_user(uid) or {}
+    user["full_name"] = full_name
+    # username/имя обновляем на всякий случай
+    if update.effective_user:
+        user["username"] = update.effective_user.username or ""
+        user["name"] = (update.effective_user.first_name or "") + " " + (update.effective_user.last_name or "")
+    storage.save_user(uid, user)
+
+    supervisors = storage.get_supervisors()
+    if not supervisors:
+        # Если администраторы ещё не настроены — пусть админ добавит их.
+        await update.message.reply_text(
+            "Администраторы ещё не настроены. Обратитесь к администратору бота.",
+            reply_markup=main_menu_kb(),
+        )
+        return
+    await update.message.reply_text(
+        "Выберите вашего администратора/куратора:",
+        reply_markup=supervisors_kb(supervisors),
+    )
+
+
+async def choose_supervisor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("reg:supervisor:"):
+        return
+    await query.answer()
+    uid = query.from_user.id if query.from_user else 0
+    try:
+        sid = int(query.data.replace("reg:supervisor:", "", 1))
+    except ValueError:
+        return
+    sup = storage.get_supervisor_by_id(sid)
+    if not sup:
+        await query.answer("Администратор не найден.", show_alert=True)
+        return
+    user = storage.get_user(uid) or {}
+    user["supervisor_id"] = sid
+    # username обновляем на всякий случай
+    if query.from_user:
+        user["username"] = query.from_user.username or ""
+        user["name"] = (query.from_user.first_name or "") + " " + (query.from_user.last_name or "")
+    storage.save_user(uid, user)
+    await query.edit_message_text("Регистрация завершена. Главное меню:", reply_markup=main_menu_kb())

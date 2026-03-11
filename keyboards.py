@@ -131,6 +131,49 @@ def calendar_month_kb(year: int, month: int, shift_key: str, pos_idx: int, singl
     return InlineKeyboardMarkup(rows)
 
 
+def admin_calendar_kb(year: int, month: int, prefix: str = "admincal"):
+    """Простой календарь для админских сценариев. prefix задаёт callback."""
+    import calendar
+    from datetime import datetime
+
+    cal = calendar.Calendar(firstweekday=0)
+    days = list(cal.itermonthdays(year, month))
+    header = [InlineKeyboardButton(f"{year} / {month}", callback_data="noop")]
+    weekdays = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    header_row = [InlineKeyboardButton(d, callback_data="noop") for d in weekdays]
+    rows = [header, header_row]
+
+    row = []
+    now = datetime.now()
+    for d in days:
+        if d == 0:
+            row.append(InlineKeyboardButton(" ", callback_data="noop"))
+        else:
+            if year == now.year and month == now.month and d < now.day:
+                row.append(InlineKeyboardButton(str(d), callback_data="noop"))
+            else:
+                iso = f"{year:04d}-{month:02d}-{d:02d}"
+                row.append(InlineKeyboardButton(str(d), callback_data=f"{prefix}:date:{iso}"))
+        if len(row) == 7:
+            rows.append(row)
+            row = []
+    if row:
+        while len(row) < 7:
+            row.append(InlineKeyboardButton(" ", callback_data="noop"))
+        rows.append(row)
+
+    # nav
+    y, m = year, month
+    prev_y, prev_m = (y - 1, 12) if m == 1 else (y, m - 1)
+    next_y, next_m = (y + 1, 1) if m == 12 else (y, m + 1)
+    rows.append([
+        InlineKeyboardButton("◀", callback_data=f"{prefix}:nav:{prev_y:04d}-{prev_m:02d}"),
+        InlineKeyboardButton("▶", callback_data=f"{prefix}:nav:{next_y:04d}-{next_m:02d}"),
+    ])
+    rows.append([InlineKeyboardButton("« Назад", callback_data="admin:back")])
+    return InlineKeyboardMarkup(rows)
+
+
 def confirm_create_kb(rid: str, is_edit: bool = False):
     if is_edit:
         return InlineKeyboardMarkup([
@@ -218,9 +261,22 @@ def profile_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Мои объявления", callback_data="menu:my_ads")],
         [InlineKeyboardButton("📩 Мои отклики", callback_data="menu:my_responses")],
+        [InlineKeyboardButton("👥 Друзья", callback_data="menu:friends")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="menu:settings")],
         [InlineKeyboardButton("« В меню", callback_data="back:main")],
     ])
+
+
+def friends_manage_kb(friends: list):
+    rows = []
+    for u in friends[:20]:
+        uid = u.get("telegram_id")
+        fn = u.get("full_name") or u.get("name") or f"ID {uid}"
+        short = fn if len(fn) <= 35 else fn[:32] + "..."
+        rows.append([InlineKeyboardButton(f"🗑 {short}", callback_data=f"friends:remove:{uid}")])
+    rows.append([InlineKeyboardButton("➕ Добавить друга", callback_data="friends:add")])
+    rows.append([InlineKeyboardButton("« Назад", callback_data="menu:profile")])
+    return InlineKeyboardMarkup(rows)
 
 
 def settings_kb(notify_enabled: bool):
@@ -229,8 +285,47 @@ def settings_kb(notify_enabled: bool):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✏️ Редактировать профиль", callback_data="settings:edit_profile")],
         [InlineKeyboardButton(label, callback_data="settings:toggle_notify")],
+        [InlineKeyboardButton("🆕 Уведомления о новых заменах", callback_data="settings:notify_new")],
         [InlineKeyboardButton("« Назад", callback_data="back:main")],
     ])
+
+
+def notify_new_kb(enabled: bool):
+    status = "включены" if enabled else "отключены"
+    toggle = "🔕 Выключить" if enabled else "🔔 Включить"
+    rows = [
+        [InlineKeyboardButton(f"Статус: {status}", callback_data="noop")],
+        [InlineKeyboardButton(toggle, callback_data="notifynew:toggle")],
+    ]
+    if enabled:
+        rows.append([InlineKeyboardButton("🎯 Позиции", callback_data="notifynew:positions")])
+        rows.append([InlineKeyboardButton("🕒 Смены", callback_data="notifynew:shifts")])
+    rows.append([InlineKeyboardButton("« Назад", callback_data="menu:settings")])
+    return InlineKeyboardMarkup(rows)
+
+
+def notify_new_positions_kb(positions: list, selected: set[str]):
+    rows = []
+    for i, p in enumerate(positions[:40]):
+        mark = "✅" if p in selected else "☑️"
+        rows.append([InlineKeyboardButton(f"{mark} {p}", callback_data=f"notifypos:toggle:{i}")])
+    rows.append([InlineKeyboardButton("Очистить (все позиции)", callback_data="notifypos:clear")])
+    rows.append([InlineKeyboardButton("« Назад", callback_data="settings:notify_new")])
+    return InlineKeyboardMarkup(rows)
+
+
+def notify_new_shifts_kb(selected: set[str]):
+    def row(label: str, key: str):
+        mark = "✅" if key in selected else "☑️"
+        return [InlineKeyboardButton(f"{mark} {label}", callback_data=f"notifyshift:toggle:{key}")]
+
+    rows = [
+        row("Дневная", "day"),
+        row("Ночная", "night"),
+        [InlineKeyboardButton("Очистить (все смены)", callback_data="notifyshift:clear")],
+        [InlineKeyboardButton("« Назад", callback_data="settings:notify_new")],
+    ]
+    return InlineKeyboardMarkup(rows)
 
 
 def my_responses_kb(responses: list, page: int = 0, per_page: int = 5):
@@ -309,6 +404,11 @@ def admin_main_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Тикеты", callback_data="admin:tickets")],
         [InlineKeyboardButton("👥 Пользователи", callback_data="admin:users")],
+        [InlineKeyboardButton("👨‍💼 Администраторы", callback_data="admin:supervisors")],
+        [InlineKeyboardButton("♻️ Сброс пользователей", callback_data="admin:resetusers")],
+        [InlineKeyboardButton("✅ Проверка объектов (чаты)", callback_data="admin:objaccess")],
+        [InlineKeyboardButton("📨 Дайджест сейчас", callback_data="admin:digestnow")],
+        [InlineKeyboardButton("📊 Отчёт по смене", callback_data="admin:shiftreport")],
         [InlineKeyboardButton("📂 Справочники", callback_data="admin:catalog")],
         [InlineKeyboardButton("⏰ Смены объектов", callback_data="admin:shiftcfg")],
         [
@@ -317,6 +417,78 @@ def admin_main_kb():
         ],
         [InlineKeyboardButton("🚪 Выйти из админки", callback_data="admin:exit")],
     ])
+
+
+def menu_quick_kb():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Меню", callback_data="back:main")]])
+
+
+def objaccess_cities_kb():
+    cities = storage.get_cities()
+    rows = [[InlineKeyboardButton(c, callback_data=f"objacc:city:{i}")] for i, c in enumerate(cities)]
+    rows.append([InlineKeyboardButton("« Назад", callback_data="admin:back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def objaccess_companies_kb(city_idx: int):
+    cities = storage.get_cities()
+    if city_idx < 0 or city_idx >= len(cities):
+        return InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data="admin:objaccess")]])
+    companies = storage.get_companies(cities[city_idx])
+    rows = [[InlineKeyboardButton(c, callback_data=f"objacc:company:{city_idx}:{i}")] for i, c in enumerate(companies)]
+    rows.append([InlineKeyboardButton("« К городам", callback_data="admin:objaccess")])
+    return InlineKeyboardMarkup(rows)
+
+
+def objaccess_objects_kb(city_idx: int, company_idx: int):
+    cities = storage.get_cities()
+    if city_idx < 0 or city_idx >= len(cities):
+        return InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data="admin:objaccess")]])
+    companies = storage.get_companies(cities[city_idx])
+    if company_idx < 0 or company_idx >= len(companies):
+        return InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data=f"objacc:city:{city_idx}")]])
+    objects = storage.get_objects(cities[city_idx], companies[company_idx])
+    rows = [[InlineKeyboardButton(o, callback_data=f"objacc:object:{city_idx}:{company_idx}:{i}")] for i, o in enumerate(objects)]
+    rows.append([InlineKeyboardButton("« К компаниям", callback_data=f"objacc:city:{city_idx}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def objaccess_object_kb(city_idx: int, company_idx: int, object_idx: int, require_mode: str, chats: list):
+    cities = storage.get_cities()
+    companies = storage.get_companies(cities[city_idx]) if 0 <= city_idx < len(cities) else []
+    objects = storage.get_objects(cities[city_idx], companies[company_idx]) if 0 <= company_idx < len(companies) else []
+    obj = objects[object_idx] if 0 <= object_idx < len(objects) else ""
+    mode_label = "Любой" if require_mode == "ANY" else "Все"
+    rows = [
+        [InlineKeyboardButton(f"Режим: {mode_label} (нажать изменить)", callback_data=f"objacc:mode:{city_idx}:{company_idx}:{object_idx}")],
+    ]
+    for ch in chats[:20]:
+        rows.append([InlineKeyboardButton(f"🗑 {ch}", callback_data=f"objacc:delchat:{city_idx}:{company_idx}:{object_idx}:{ch}")])
+    rows.append([InlineKeyboardButton("➕ Добавить чат/канал", callback_data=f"objacc:addchat:{city_idx}:{company_idx}:{object_idx}")])
+    rows.append([InlineKeyboardButton("« К объектам", callback_data=f"objacc:company:{city_idx}:{company_idx}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def friends_kb(friends: list, prefix: str = "friends:choose"):
+    rows = []
+    for u in friends:
+        uid = u.get("telegram_id")
+        fn = u.get("full_name") or u.get("name") or f"ID {uid}"
+        short = fn if len(fn) <= 35 else fn[:32] + "..."
+        rows.append([InlineKeyboardButton(short, callback_data=f"{prefix}:{uid}")])
+    rows.append([InlineKeyboardButton("« Назад", callback_data="back:main")])
+    return InlineKeyboardMarkup(rows)
+
+
+def friends_choose_kb(friends: list, rid: str):
+    rows = []
+    for u in friends:
+        uid = u.get("telegram_id")
+        fn = u.get("full_name") or u.get("name") or f"ID {uid}"
+        short = fn if len(fn) <= 35 else fn[:32] + "..."
+        rows.append([InlineKeyboardButton(short, callback_data=f"friends:choose:{rid}:{uid}")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data=f"friends:cancel:{rid}")])
+    return InlineKeyboardMarkup(rows)
 
 
 def admin_banned_kb(banned: list):
@@ -437,10 +609,140 @@ def back_to_main_kb():
     ])
 
 
+def admin_quick_reply_ticket_kb(tid: str):
+    """Кнопка для администратора: сразу ответить на тикет."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Ответить на тикет", callback_data=f"admin:reply:{tid}")],
+    ])
+
+
+def notify_supervisor_kb(rid: str):
+    """Кнопка уведомить своего администратора о замене."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📣 Предупредить администратора", callback_data=f"notify_sup:{rid}")],
+        [InlineKeyboardButton("↩️ Отменить подтверждение", callback_data=f"undo_confirm:{rid}")],
+    ])
+
+
+def supervisors_kb(supervisors: list):
+    """Выбор администратора/куратора при регистрации."""
+    rows = []
+    for s in supervisors:
+        sid = s.get("id")
+        title = s.get("title") or f"Админ #{sid}"
+        if len(title) > 40:
+            title = title[:37] + "..."
+        rows.append([InlineKeyboardButton(title, callback_data=f"reg:supervisor:{sid}")])
+    rows.append([InlineKeyboardButton("« В меню", callback_data="back:main")])
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_supervisors_kb(supervisors: list):
+    rows = []
+    for s in supervisors:
+        sid = s.get("id")
+        title = s.get("title") or ""
+        short = title if len(title) <= 30 else title[:27] + "..."
+        rows.append([InlineKeyboardButton(f"🗑 {short}", callback_data=f"admin:supervisordel:{sid}")])
+    rows.append([InlineKeyboardButton("➕ Добавить администратора", callback_data="admin:supervisoradd")])
+    rows.append([InlineKeyboardButton("« Назад", callback_data="admin:back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_reset_users_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚠️ Удалить всех пользователей", callback_data="admin:resetusers:confirm")],
+        [InlineKeyboardButton("« Назад", callback_data="admin:back")],
+    ])
+
+
+def admin_reset_users_confirm_kb():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Да, удалить", callback_data="admin:resetusers:yes"),
+            InlineKeyboardButton("❌ Отмена", callback_data="admin:resetusers:no"),
+        ],
+    ])
+
+
+def admin_users_nav_kb(page: int, total: int, per_page: int = 10, prefix: str = "admin:usersp"):
+    rows = []
+    nav = [InlineKeyboardButton("« Назад", callback_data="admin:back")]
+    start = page * per_page
+    if page > 0:
+        nav.insert(0, InlineKeyboardButton("◀", callback_data=f"{prefix}:{page-1}"))
+    if start + per_page < total:
+        nav.append(InlineKeyboardButton("▶", callback_data=f"{prefix}:{page+1}"))
+    rows.append(nav)
+    # Дополнительные подсказки для бан/разбан через команды.
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_users_list_kb(users_page: list, page: int, total: int, per_page: int = 10):
+    """Список участников с бан/разбан кнопками + навигация."""
+    rows = []
+    for u in users_page:
+        uid = u.get("telegram_id")
+        fn = u.get("full_name") or u.get("name") or f"ID {uid}"
+        short = fn if len(fn) <= 22 else fn[:19] + "..."
+        if u.get("banned_until"):
+            rows.append([
+                InlineKeyboardButton(f"🔓 {short}", callback_data=f"admin:userunban:{uid}"),
+                InlineKeyboardButton("BAN", callback_data="noop"),
+            ])
+        else:
+            rows.append([
+                InlineKeyboardButton(f"🚫 {short}", callback_data=f"admin:userban:{uid}"),
+                InlineKeyboardButton("OK", callback_data="noop"),
+            ])
+    # Навигация
+    start = page * per_page
+    nav = [InlineKeyboardButton("« Назад", callback_data="admin:back")]
+    if page > 0:
+        nav.insert(0, InlineKeyboardButton("◀", callback_data=f"admin:usersp:{page-1}"))
+    if start + per_page < total:
+        nav.append(InlineKeyboardButton("▶", callback_data=f"admin:usersp:{page+1}"))
+    rows.append(nav)
+    rows.append([InlineKeyboardButton("🔎 Фильтр по объекту", callback_data="admin:users:filterobj")])
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_users_filter_cities_kb():
+    cities = storage.get_cities()
+    rows = [[InlineKeyboardButton(c, callback_data=f"usersobj:city:{i}")] for i, c in enumerate(cities)]
+    rows.append([InlineKeyboardButton("❌ Сбросить фильтр", callback_data="usersobj:reset")])
+    rows.append([InlineKeyboardButton("« Назад", callback_data="admin:users")])
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_users_filter_companies_kb(city_idx: int):
+    cities = storage.get_cities()
+    if city_idx < 0 or city_idx >= len(cities):
+        return InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data="admin:users")]])
+    companies = storage.get_companies(cities[city_idx])
+    rows = [[InlineKeyboardButton(c, callback_data=f"usersobj:company:{city_idx}:{i}")] for i, c in enumerate(companies)]
+    rows.append([InlineKeyboardButton("« К городам", callback_data="admin:users:filterobj")])
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_users_filter_objects_kb(city_idx: int, company_idx: int):
+    cities = storage.get_cities()
+    if city_idx < 0 or city_idx >= len(cities):
+        return InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data="admin:users")]])
+    companies = storage.get_companies(cities[city_idx])
+    if company_idx < 0 or company_idx >= len(companies):
+        return InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data="admin:users:filterobj")]])
+    objects = storage.get_objects(cities[city_idx], companies[company_idx])
+    rows = [[InlineKeyboardButton(o, callback_data=f"usersobj:set:{city_idx}:{company_idx}:{i}")] for i, o in enumerate(objects)]
+    rows.append([InlineKeyboardButton("« К компаниям", callback_data=f"usersobj:city:{city_idx}")])
+    return InlineKeyboardMarkup(rows)
+
+
 def digest_notify_kb():
     """В уведомлении о количестве замен: перейти к списку и отключить уведомления."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 К списку замен", callback_data="act:replace")],
+        [InlineKeyboardButton("🏠 Меню", callback_data="back:main")],
         [InlineKeyboardButton("🔕 Отключить уведомления", callback_data="settings:toggle_notify")],
     ])
 
@@ -485,6 +787,35 @@ def admin_shiftcfg_objects_kb(city_idx: int, company_idx: int):
     rows.append([InlineKeyboardButton("« К компаниям", callback_data=f"shiftcfg:city:{city_idx}")])
     return InlineKeyboardMarkup(rows)
 
+
+def shiftreport_cities_kb():
+    return admin_shiftcfg_cities_kb()
+
+
+def shiftreport_companies_kb(city_idx: int):
+    return admin_shiftcfg_companies_kb(city_idx)
+
+
+def shiftreport_objects_kb(city_idx: int, company_idx: int):
+    return admin_shiftcfg_objects_kb(city_idx, company_idx)
+
+
+def shiftreport_shift_kb(city_idx: int, company_idx: int, object_idx: int):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Дневная", callback_data=f"shiftrep:shift:{city_idx}:{company_idx}:{object_idx}:day")],
+        [InlineKeyboardButton("Ночная", callback_data=f"shiftrep:shift:{city_idx}:{company_idx}:{object_idx}:night")],
+        [InlineKeyboardButton("« Назад", callback_data=f"shiftrep:company:{city_idx}:{company_idx}")],
+    ])
+
+
+def shiftreport_nav_kb(page: int, total: int, per_page: int = 10):
+    nav = [InlineKeyboardButton("« Назад", callback_data="admin:shiftreport")]
+    start = page * per_page
+    if page > 0:
+        nav.insert(0, InlineKeyboardButton("◀", callback_data=f"shiftrep:page:{page-1}"))
+    if start + per_page < total:
+        nav.append(InlineKeyboardButton("▶", callback_data=f"shiftrep:page:{page+1}"))
+    return InlineKeyboardMarkup([nav])
 
 def admin_shiftcfg_object_kb(city_idx: int, company_idx: int, object_idx: int):
     cities = storage.get_cities()

@@ -19,7 +19,23 @@ from keyboards import (
     settings_kb,
     my_responses_kb,
     my_response_detail_kb,
+    friends_manage_kb,
+    notify_new_kb,
+    notify_new_positions_kb,
+    notify_new_shifts_kb,
 )
+
+import json
+
+
+def _loads_list(s: str | None) -> list:
+    if not s:
+        return []
+    try:
+        v = json.loads(s)
+        return v if isinstance(v, list) else []
+    except Exception:
+        return []
 
 
 async def back_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -51,6 +67,76 @@ async def menu_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(text, reply_markup=profile_kb())
 
 
+async def menu_friends(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or query.data != "menu:friends":
+        return
+    await query.answer()
+    uid = query.from_user.id if query.from_user else 0
+    friends = storage.get_friends(uid)
+    if not friends:
+        await query.edit_message_text(
+            "У вас пока нет друзей.\n\nДобавить можно по Telegram ID (человек должен быть зарегистрирован и на том же объекте).",
+            reply_markup=friends_manage_kb([]),
+        )
+        return
+    await query.edit_message_text("Ваши друзья:", reply_markup=friends_manage_kb(friends))
+
+
+async def friends_add_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or query.data != "friends:add":
+        return
+    await query.answer()
+    context.user_data["friends_add_waiting"] = True
+    await query.edit_message_text(
+        "Введите Telegram ID друга (число).\n\nВажно: друг должен быть зарегистрирован в боте и быть на том же объекте.",
+    )
+
+
+async def friends_add_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    if not context.user_data.pop("friends_add_waiting", None):
+        return
+    uid = update.effective_user.id if update.effective_user else 0
+    raw = (update.message.text or "").strip()
+    try:
+        fid = int(raw)
+    except ValueError:
+        await update.message.reply_text("Нужно число (Telegram ID).", reply_markup=profile_kb())
+        return
+    if fid == uid:
+        await update.message.reply_text("Нельзя добавить самого себя.", reply_markup=profile_kb())
+        return
+    owner = storage.get_user(uid) or {}
+    friend = storage.get_user(fid) or {}
+    if not friend.get("city") or not friend.get("company") or not friend.get("object"):
+        await update.message.reply_text("Друг не зарегистрирован в боте.", reply_markup=profile_kb())
+        return
+    if (owner.get("city"), owner.get("company"), owner.get("object")) != (friend.get("city"), friend.get("company"), friend.get("object")):
+        await update.message.reply_text("Друг должен быть на том же объекте.", reply_markup=profile_kb())
+        return
+    storage.add_friend(uid, fid)
+    friends = storage.get_friends(uid)
+    await update.message.reply_text("Друг добавлен.", reply_markup=friends_manage_kb(friends))
+
+
+async def friends_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("friends:remove:"):
+        return
+    await query.answer()
+    uid = query.from_user.id if query.from_user else 0
+    try:
+        fid = int(query.data.replace("friends:remove:", "", 1))
+    except ValueError:
+        return
+    storage.remove_friend(uid, fid)
+    friends = storage.get_friends(uid)
+    await query.edit_message_text("Обновлено.", reply_markup=friends_manage_kb(friends))
+
+
 async def menu_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query or query.data != "menu:admin":
@@ -75,6 +161,111 @@ async def menu_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Настройки:\n\n• Редактировать профиль — город, компания, объект.\n• Уведомления — рассылка в 12:00 и 18:00 о количестве замен в списке.",
         reply_markup=settings_kb(notify_enabled),
     )
+
+
+async def settings_notify_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or query.data != "settings:notify_new":
+        return
+    await query.answer()
+    uid = query.from_user.id if query.from_user else 0
+    user = storage.get_user(uid) or {}
+    enabled = bool(user.get("notify_new_enabled", 0))
+    await query.edit_message_text(
+        "Уведомления о новых заменах.\n\nМожно включить и выбрать фильтры (позиции/смены).",
+        reply_markup=notify_new_kb(enabled),
+    )
+
+
+async def notifynew_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or query.data != "notifynew:toggle":
+        return
+    await query.answer()
+    uid = query.from_user.id if query.from_user else 0
+    user = storage.get_user(uid) or {}
+    user["notify_new_enabled"] = not bool(user.get("notify_new_enabled", 0))
+    storage.save_user(uid, user)
+    enabled = bool(user.get("notify_new_enabled", 0))
+    await query.edit_message_text("Обновлено.", reply_markup=notify_new_kb(enabled))
+
+
+async def notifynew_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or query.data != "notifynew:positions":
+        return
+    await query.answer()
+    uid = query.from_user.id if query.from_user else 0
+    user = storage.get_user(uid) or {}
+    city, company, obj = user.get("city"), user.get("company"), user.get("object")
+    positions = storage.get_positions(city, company, obj) if (city and company and obj) else []
+    selected = set(_loads_list(user.get("notify_positions")))
+    context.user_data["notify_positions_list"] = positions
+    await query.edit_message_text("Выберите позиции (пусто = все):", reply_markup=notify_new_positions_kb(positions, selected))
+
+
+async def notifypos_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("notifypos:"):
+        return
+    await query.answer()
+    uid = query.from_user.id if query.from_user else 0
+    user = storage.get_user(uid) or {}
+    positions = context.user_data.get("notify_positions_list") or []
+    selected = set(_loads_list(user.get("notify_positions")))
+    if query.data == "notifypos:clear":
+        user["notify_positions"] = json.dumps([])
+        storage.save_user(uid, user)
+        await query.edit_message_text("Позиции очищены (все позиции).", reply_markup=notify_new_positions_kb(positions, set()))
+        return
+    try:
+        idx = int(query.data.replace("notifypos:toggle:", "", 1))
+    except Exception:
+        return
+    if 0 <= idx < len(positions):
+        p = positions[idx]
+        if p in selected:
+            selected.remove(p)
+        else:
+            selected.add(p)
+        user["notify_positions"] = json.dumps(sorted(selected))
+        storage.save_user(uid, user)
+        await query.edit_message_text("Выберите позиции (пусто = все):", reply_markup=notify_new_positions_kb(positions, selected))
+
+
+async def notifynew_shifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or query.data != "notifynew:shifts":
+        return
+    await query.answer()
+    uid = query.from_user.id if query.from_user else 0
+    user = storage.get_user(uid) or {}
+    selected = set(_loads_list(user.get("notify_shift_keys")))
+    await query.edit_message_text("Выберите смены (пусто = все):", reply_markup=notify_new_shifts_kb(selected))
+
+
+async def notifyshift_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("notifyshift:"):
+        return
+    await query.answer()
+    uid = query.from_user.id if query.from_user else 0
+    user = storage.get_user(uid) or {}
+    selected = set(_loads_list(user.get("notify_shift_keys")))
+    if query.data == "notifyshift:clear":
+        user["notify_shift_keys"] = json.dumps([])
+        storage.save_user(uid, user)
+        await query.edit_message_text("Смены очищены (все смены).", reply_markup=notify_new_shifts_kb(set()))
+        return
+    key = query.data.replace("notifyshift:toggle:", "", 1)
+    if key in {"day", "night"}:
+        if key in selected:
+            selected.remove(key)
+        else:
+            selected.add(key)
+        user["notify_shift_keys"] = json.dumps(sorted(selected))
+        storage.save_user(uid, user)
+        await query.edit_message_text("Выберите смены (пусто = все):", reply_markup=notify_new_shifts_kb(selected))
 
 
 async def settings_edit_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -18,7 +18,7 @@ from telegram import BotCommand
 import config
 import database  # инициализация БД при импорте
 import storage
-from keyboards import main_menu_kb, digest_notify_kb
+from keyboards import main_menu_kb, digest_notify_kb, menu_quick_kb
 from bot.handlers import start as start_handlers
 from bot.handlers import menu as menu_handlers
 from bot.handlers import find_replace as find_handlers
@@ -37,14 +37,56 @@ logger = logging.getLogger(__name__)
 LOCAL_TZ = ZoneInfo("Europe/Minsk")
 
 
+def _is_user_banned(user: dict) -> bool:
+    """Полный бан: пользователь не может пользоваться ботом."""
+    from datetime import date as _date
+
+    until = user.get("banned_until")
+    if not until:
+        return False
+    if until == "forever":
+        return True
+    try:
+        d = _date.fromisoformat(until)
+        return d >= _date.today()
+    except Exception:
+        return False
+
+
 async def noop_callback(update: Update, context):
     query = update.callback_query
     if query:
+        # Обновляем username при любом клике.
+        try:
+            u = query.from_user
+            if u:
+                user = storage.get_user(u.id) or {"telegram_id": u.id}
+                user["username"] = u.username or ""
+                user["name"] = (u.first_name or "") + " " + (u.last_name or "")
+                storage.save_user(u.id, user)
+                if _is_user_banned(user):
+                    await query.answer("Доступ к боту заблокирован.", show_alert=True)
+                    return
+        except Exception:
+            pass
         await query.answer()
 
 
 async def message_dispatch(update: Update, context):
     """Текстовые сообщения: поддержка, ответ в тикет, отзыв, ответ админа, справочник."""
+    # Обновляем username/имя на любом входящем сообщении.
+    try:
+        u = update.effective_user
+        if u:
+            user = storage.get_user(u.id) or {"telegram_id": u.id}
+            user["username"] = u.username or ""
+            user["name"] = (u.first_name or "") + " " + (u.last_name or "")
+            storage.save_user(u.id, user)
+            if _is_user_banned(user):
+                # Забаненным ничего не отвечаем.
+                return
+    except Exception:
+        pass
     if context.user_data.get("waiting_support"):
         await support_handlers.support_text(update, context)
         return
@@ -54,11 +96,26 @@ async def message_dispatch(update: Update, context):
     if context.user_data.get("waiting_review_text"):
         await reviews_handlers.review_text_message(update, context)
         return
+    if context.user_data.get("waiting_full_name"):
+        await start_handlers.full_name_text(update, context)
+        return
+    if context.user_data.get("friends_add_waiting"):
+        await menu_handlers.friends_add_text(update, context)
+        return
     if context.user_data.get("admin_broadcast_waiting"):
         await admin_handlers.admin_broadcast_text(update, context)
         return
     if context.user_data.get("admin_ban_waiting"):
         await admin_handlers.admin_ban_text(update, context)
+        return
+    if context.user_data.get("admin_userban_target"):
+        await admin_handlers.admin_userban_text(update, context)
+        return
+    if context.user_data.get("admin_supervisor_add_waiting"):
+        await admin_handlers.admin_supervisor_add_text(update, context)
+        return
+    if context.user_data.get("objacc_addchat"):
+        await admin_handlers.objacc_addchat_text(update, context)
         return
     if context.user_data.get("admin_shiftcfg_waiting"):
         await admin_handlers.admin_shiftcfg_text(update, context)
@@ -82,7 +139,6 @@ async def cmd_menu(update: Update, context):
         "Главное меню. Доступные команды:\n"
         "/menu — главное меню\n"
         "/help — помощь\n"
-        "/admin — режим администратора (для админа)\n"
     )
     await update.message.reply_text(text, reply_markup=main_menu_kb())
 
@@ -113,6 +169,8 @@ async def digest_job(context):
     """Ежедневные дайджесты в 12:00 и 18:00: сколько сейчас активных замен у пользователя."""
     all_replacements = storage.get_replacements(active_only=True)
     users = storage.get_all_users()
+    sent = 0
+    failed = 0
     for uid_str, user in users.items():
         try:
             uid = int(uid_str)
@@ -146,8 +204,12 @@ async def digest_job(context):
                 text=text,
                 reply_markup=digest_notify_kb(),
             )
+            sent += 1
         except Exception:
+            failed += 1
             continue
+    if failed:
+        logger.warning("digest_job: sent=%s failed=%s total_users=%s", sent, failed, len(users))
 
 
 async def shifts_start_job(context):
@@ -158,10 +220,11 @@ async def shifts_start_job(context):
     today_iso = today.isoformat()
     # Берём все активные замены, включая те, на которые уже есть заявка.
     all_replacements = storage.get_replacements(active_only=True, exclude_requested=False)
+
+    # Группируем объявления по смене, чтобы в момент старта снять ВСЕ объявления на эту смену.
+    groups = {}
     for r in all_replacements:
-        if r.get("start_notified"):
-            continue
-        if r.get("date_from") != today_iso:
+        if r.get("start_notified") or r.get("date_from") != today_iso:
             continue
         shift_key = r.get("shift_key") or "day"
         city = r.get("city")
@@ -169,7 +232,9 @@ async def shifts_start_job(context):
         obj = r.get("object")
         if not (city and company and obj):
             continue
-        # Время начала смены: либо из object_shifts, либо дефолт (09:00/21:00).
+        groups.setdefault((city, company, obj, shift_key), []).append(r)
+
+    for (city, company, obj, shift_key), items in groups.items():
         shift_info = storage.get_object_shift(city, company, obj, shift_key)
         if shift_info and shift_info.get("start_time"):
             start_str = shift_info["start_time"]
@@ -180,59 +245,81 @@ async def shifts_start_job(context):
         except Exception:
             continue
         start_dt = datetime.combine(today, time(h, m, tzinfo=LOCAL_TZ))
-        # Считаем, что «начало смены» — окно в 10 минут от старта.
         if not (start_dt <= now <= start_dt + timedelta(minutes=10)):
             continue
 
-        author_id = r.get("author_id")
-        taker_id = r.get("taken_by_id")
-        position = r.get("position", "")
-        date_text = r.get("date_text", "")
+        # Уведомляем по согласованным заменам.
+        for r in items:
+            author_id = r.get("author_id")
+            subject_id = r.get("for_friend_id") or author_id
+            taker_id = r.get("taken_by_id")
+            position = r.get("position", "")
+            date_text = r.get("date_text", "")
+            if r.get("confirmed") and taker_id:
+                author = storage.get_user(author_id) or {}
+                author["was_replaced_count"] = author.get("was_replaced_count", 0) + 1
+                storage.save_user(author_id, author)
+                taker = storage.get_user(taker_id) or {}
+                taker["replaced_count"] = taker.get("replaced_count", 0) + 1
+                storage.save_user(taker_id, taker)
+                try:
+                    await context.bot.send_message(
+                        chat_id=subject_id,
+                        text=f"✅ Смена началась: {position} | {date_text}\nЗамена подтверждена.",
+                        reply_markup=menu_quick_kb(),
+                    )
+                except Exception:
+                    pass
+                if str(subject_id) != str(author_id):
+                    try:
+                        await context.bot.send_message(
+                            chat_id=author_id,
+                            text=f"✅ Смена началась: {position} | {date_text}\nДля друга замена подтверждена.",
+                            reply_markup=menu_quick_kb(),
+                        )
+                    except Exception:
+                        pass
+                try:
+                    await context.bot.send_message(
+                        chat_id=taker_id,
+                        text=f"✅ Смена началась: {position} | {date_text}\nВы выходите на замену.",
+                        reply_markup=menu_quick_kb(),
+                    )
+                except Exception:
+                    pass
 
-        if r.get("confirmed") and taker_id:
-            # Согласованная замена — считаем, что смена реально состоялась.
-            # Обновляем статистику только в момент начала смены.
-            author = storage.get_user(author_id) or {}
-            author["was_replaced_count"] = author.get("was_replaced_count", 0) + 1
-            storage.save_user(author_id, author)
-            taker = storage.get_user(taker_id) or {}
-            taker["replaced_count"] = taker.get("replaced_count", 0) + 1
-            storage.save_user(taker_id, taker)
-
-            try:
-                await context.bot.send_message(
-                    chat_id=author_id,
-                    text=f"Смена началась ({position}, {date_text}). Вас заменяет пользователь ID {taker_id}.",
-                )
-            except Exception:
-                pass
-            try:
-                await context.bot.send_message(
-                    chat_id=taker_id,
-                    text=f"Началась согласованная смена ({position}, {date_text}), где вы заменяете автора объявления.",
-                )
-            except Exception:
-                pass
+        # Снимаем с публикации ВСЕ объявления на начавшуюся смену.
+        for r in items:
+            author_id = r.get("author_id")
+            subject_id = r.get("for_friend_id") or author_id
+            position = r.get("position", "")
+            date_text = r.get("date_text", "")
+            if not (r.get("confirmed") and r.get("taken_by_id")):
+                try:
+                    await context.bot.send_message(
+                        chat_id=subject_id,
+                        text=(
+                            f"❌ Смена началась: {position} | {date_text}\n"
+                            f"Замена не согласована — объявление снято."
+                        ),
+                        reply_markup=menu_quick_kb(),
+                    )
+                except Exception:
+                    pass
+                if str(subject_id) != str(author_id):
+                    try:
+                        await context.bot.send_message(
+                            chat_id=author_id,
+                            text=f"❌ Смена началась: {position} | {date_text}\nДля друга замена не согласована — объявление снято.",
+                            reply_markup=menu_quick_kb(),
+                        )
+                    except Exception:
+                        pass
+            r["active"] = False
+            r["requested_by_id"] = None
+            r["requested_by_username"] = None
             r["start_notified"] = 1
             storage.save_replacement(r)
-            continue
-
-        # Несогласованная замена: никого не нашли, снимаем со списка.
-        try:
-            await context.bot.send_message(
-                chat_id=author_id,
-                text=(
-                    f"Смена началась ({position}, {date_text}), но замена не была согласована.\n"
-                    f"Объявление автоматически снято с публикации."
-                ),
-            )
-        except Exception:
-            pass
-        r["active"] = False
-        r["requested_by_id"] = None
-        r["requested_by_username"] = None
-        r["start_notified"] = 1
-        storage.save_replacement(r)
 
 
 def main():
@@ -262,10 +349,19 @@ def main():
 
     app.add_handler(CallbackQueryHandler(menu_handlers.back_main, pattern="^back:main$"))
     app.add_handler(CallbackQueryHandler(menu_handlers.menu_profile, pattern="^menu:profile$"))
+    app.add_handler(CallbackQueryHandler(menu_handlers.menu_friends, pattern="^menu:friends$"))
+    app.add_handler(CallbackQueryHandler(menu_handlers.friends_add_prompt, pattern="^friends:add$"))
+    app.add_handler(CallbackQueryHandler(menu_handlers.friends_remove, pattern="^friends:remove:"))
     app.add_handler(CallbackQueryHandler(menu_handlers.menu_admin, pattern="^menu:admin$"))
     app.add_handler(CallbackQueryHandler(menu_handlers.menu_settings, pattern="^menu:settings$"))
     app.add_handler(CallbackQueryHandler(menu_handlers.settings_edit_profile, pattern="^settings:edit_profile$"))
     app.add_handler(CallbackQueryHandler(menu_handlers.settings_toggle_notify, pattern="^settings:toggle_notify$"))
+    app.add_handler(CallbackQueryHandler(menu_handlers.settings_notify_new, pattern="^settings:notify_new$"))
+    app.add_handler(CallbackQueryHandler(menu_handlers.notifynew_toggle, pattern="^notifynew:toggle$"))
+    app.add_handler(CallbackQueryHandler(menu_handlers.notifynew_positions, pattern="^notifynew:positions$"))
+    app.add_handler(CallbackQueryHandler(menu_handlers.notifypos_toggle, pattern="^notifypos:"))
+    app.add_handler(CallbackQueryHandler(menu_handlers.notifynew_shifts, pattern="^notifynew:shifts$"))
+    app.add_handler(CallbackQueryHandler(menu_handlers.notifyshift_toggle, pattern="^notifyshift:"))
     app.add_handler(CallbackQueryHandler(menu_handlers.menu_my_ads, pattern="^menu:my_ads$"))
     app.add_handler(CallbackQueryHandler(menu_handlers.menu_my_ads_page, pattern="^myads:"))
     app.add_handler(CallbackQueryHandler(menu_handlers.my_ad_detail, pattern="^myad:"))
@@ -277,6 +373,7 @@ def main():
     app.add_handler(CallbackQueryHandler(start_handlers.callback_city, pattern="^city:"))
     app.add_handler(CallbackQueryHandler(start_handlers.callback_company, pattern="^company:"))
     app.add_handler(CallbackQueryHandler(start_handlers.callback_object, pattern="^obj:"))
+    app.add_handler(CallbackQueryHandler(start_handlers.choose_supervisor, pattern="^reg:supervisor:"))
 
     app.add_handler(CallbackQueryHandler(find_handlers.act_find, pattern="^act:find$"))
     app.add_handler(CallbackQueryHandler(find_handlers.edit_ad, pattern="^editad:"))
@@ -286,6 +383,8 @@ def main():
     app.add_handler(CallbackQueryHandler(find_handlers.callback_date, pattern="^date:"))
     app.add_handler(CallbackQueryHandler(find_handlers.callback_publish, pattern="^publish:"))
     app.add_handler(CallbackQueryHandler(find_handlers.friend_confirm, pattern="^friend:(yes|no):"))
+    app.add_handler(CallbackQueryHandler(find_handlers.friends_choose, pattern="^friends:choose:"))
+    app.add_handler(CallbackQueryHandler(find_handlers.friends_cancel, pattern="^friends:cancel:"))
     app.add_handler(CallbackQueryHandler(find_handlers.callback_update, pattern="^update:"))
 
     app.add_handler(CallbackQueryHandler(replace_handlers.act_replace, pattern="^act:replace$"))
@@ -296,6 +395,7 @@ def main():
     app.add_handler(CallbackQueryHandler(replace_handlers.creator_reject, pattern="^creator_reject:"))
     app.add_handler(CallbackQueryHandler(replace_handlers.taker_refuse, pattern="^taker_refuse:"))
     app.add_handler(CallbackQueryHandler(replace_handlers.undo_confirm, pattern="^undo_confirm:"))
+    app.add_handler(CallbackQueryHandler(replace_handlers.notify_supervisor, pattern="^notify_sup:"))
 
     app.add_handler(CallbackQueryHandler(support_handlers.menu_support, pattern="^(menu:support|support:new)$"))
     app.add_handler(CallbackQueryHandler(support_handlers.support_reply_start, pattern="^support:reply:"))
@@ -314,6 +414,27 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_banned, pattern="^admin:banned$"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_unban, pattern="^admin:unban:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_ban_prompt, pattern="^admin:ban_prompt$"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_supervisors, pattern="^admin:supervisors$"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_supervisor_add, pattern="^admin:supervisoradd$"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_supervisor_del, pattern="^admin:supervisordel:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_reset_users, pattern="^admin:resetusers$"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_reset_users_confirm, pattern="^admin:resetusers:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_objaccess, pattern="^admin:objaccess$"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.objacc_city, pattern="^objacc:city:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.objacc_company, pattern="^objacc:company:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.objacc_object, pattern="^objacc:object:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.objacc_mode, pattern="^objacc:mode:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.objacc_addchat_prompt, pattern="^objacc:addchat:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.objacc_delchat, pattern="^objacc:delchat:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_digest_now, pattern="^admin:digestnow$"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_shiftreport, pattern="^admin:shiftreport$"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.shiftrep_city, pattern="^shiftrep:city:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.shiftrep_company, pattern="^shiftrep:company:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.shiftrep_object, pattern="^shiftrep:object:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.shiftrep_shift, pattern="^shiftrep:shift:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.shiftrep_cal_nav, pattern="^shiftrepcal:nav:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.shiftrep_date, pattern="^shiftrepcal:date:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.shiftrep_page, pattern="^shiftrep:page:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_shiftcfg, pattern="^admin:shiftcfg$"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_shiftcfg_city, pattern="^shiftcfg:city:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_shiftcfg_company, pattern="^shiftcfg:company:"))
@@ -326,6 +447,14 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_reply, pattern="^admin:reply:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_close_ticket, pattern="^admin:close:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_users, pattern="^admin:users$"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_users_page, pattern="^admin:usersp:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_users_filterobj, pattern="^admin:users:filterobj$"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.usersobj_city, pattern="^usersobj:city:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.usersobj_company, pattern="^usersobj:company:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.usersobj_set, pattern="^usersobj:set:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.usersobj_reset, pattern="^usersobj:reset$"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_userban_prompt, pattern="^admin:userban:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_userunban, pattern="^admin:userunban:"))
 
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_catalog, pattern="^admin:catalog$"))
     app.add_handler(CallbackQueryHandler(admin_handlers.catalog_city_menu, pattern="^cat:city:"))

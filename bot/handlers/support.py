@@ -8,7 +8,7 @@ from telegram.ext import ContextTypes
 
 import config
 import storage
-from keyboards import support_kb, main_menu_kb, back_to_main_kb, support_reply_ticket_kb
+from keyboards import support_kb, main_menu_kb, back_to_main_kb, admin_quick_reply_ticket_kb
 
 
 def _is_support_banned(user: dict) -> tuple[bool, str]:
@@ -76,6 +76,7 @@ async def support_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=config.ADMIN_TELEGRAM_ID,
             text=f"📩 Новый тикет #{tid}\nОт: {uid} (@{ticket.get('username', '')})\n\n{text}",
+            reply_markup=admin_quick_reply_ticket_kb(tid),
         )
     except Exception:
         pass

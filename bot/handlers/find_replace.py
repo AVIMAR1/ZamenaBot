@@ -9,6 +9,8 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 import storage
+from bot.utils.access import check_object_access
+from bot.utils.notifs import notify_new_replacement
 from keyboards import (
     shift_kb,
     positions_kb,
@@ -16,6 +18,7 @@ from keyboards import (
     confirm_create_kb,
     main_menu_kb,
     friend_confirm_kb,
+    friends_choose_kb,
 )
 
 
@@ -48,13 +51,24 @@ async def _publish_from_pending(query, context: ContextTypes.DEFAULT_TYPE, rid: 
     """Общая логика публикации объявления из pending_replacement."""
     uid = query.from_user.id if query.from_user else 0
     user = storage.get_user(uid) or {}
+    city = user.get("city")
+    company = user.get("company")
+    obj = user.get("object")
+    if city and company and obj:
+        ok, reason = await check_object_access(context.bot, uid, city, company, obj)
+        if not ok:
+            await query.edit_message_text(reason, reply_markup=main_menu_kb())
+            return
     replacement = {
         "id": rid,
         "author_id": uid,
         "author_username": user.get("username") or (query.from_user.username if query.from_user else ""),
-        "city": user.get("city"),
-        "company": user.get("company"),
-        "object": user.get("object"),
+        "for_friend_id": pending.get("for_friend_id"),
+        "for_friend_username": pending.get("for_friend_username", ""),
+        "for_friend_full_name": pending.get("for_friend_full_name", ""),
+        "city": city,
+        "company": company,
+        "object": obj,
         "shift": pending.get("shift"),
         "shift_key": pending.get("shift_key"),
         "position": pending.get("position"),
@@ -66,6 +80,13 @@ async def _publish_from_pending(query, context: ContextTypes.DEFAULT_TYPE, rid: 
         "taken_by_id": None,
     }
     storage.save_replacement(replacement)
+    # Синхронизируем username из users (на случай смены @username)
+    storage.sync_replacement_usernames(replacement)
+    # Уведомления о новой замене по фильтрам
+    try:
+        await notify_new_replacement(context.bot, replacement)
+    except Exception:
+        pass
     context.user_data.pop("pending_replacement", None)
     await query.edit_message_text("Объявление опубликовано.")
     await query.message.reply_text("Главное меню:", reply_markup=main_menu_kb())
@@ -78,11 +99,19 @@ async def act_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     uid = query.from_user.id if query.from_user else 0
     user = storage.get_user(uid) or {}
+    city = user.get("city", "")
+    company = user.get("company", "")
+    obj = user.get("object", "")
+    if city and company and obj:
+        ok, reason = await check_object_access(context.bot, uid, city, company, obj)
+        if not ok:
+            await query.edit_message_text(reason, reply_markup=main_menu_kb())
+            return
     context.user_data["pending_replacement"] = {
         "author_id": uid,
-        "city": user.get("city", ""),
-        "company": user.get("company", ""),
-        "object": user.get("object", ""),
+        "city": city,
+        "company": company,
+        "object": obj,
     }
     await query.edit_message_text("Выберите смену:", reply_markup=shift_kb())
 
@@ -317,7 +346,65 @@ async def friend_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "yes":
         pending["friend_confirmed"] = True
         context.user_data["pending_replacement"] = pending
-        await _publish_from_pending(query, context, rid, pending)
+        uid = query.from_user.id if query.from_user else 0
+        friends = storage.get_friends(uid)
+        if not friends:
+            await query.edit_message_text(
+                "У вас нет друзей. Добавьте друга в профиле: Профиль → Друзья.",
+                reply_markup=main_menu_kb(),
+            )
+            return
+        await query.edit_message_text(
+            "Выберите друга, для которого ищем замену:",
+            reply_markup=friends_choose_kb(friends, rid),
+        )
+
+
+async def friends_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("friends:choose:"):
+        return
+    await query.answer()
+    parts = query.data.split(":")
+    if len(parts) < 4:
+        return
+    rid = parts[2]
+    try:
+        friend_id = int(parts[3])
+    except ValueError:
+        return
+    pending = context.user_data.get("pending_replacement")
+    if not pending or pending.get("id") != rid:
+        await query.edit_message_text("Сессия истекла.", reply_markup=main_menu_kb())
+        return
+    uid = query.from_user.id if query.from_user else 0
+    owner = storage.get_user(uid) or {}
+    friend = storage.get_user(friend_id) or {}
+    if not friend.get("city") or not friend.get("company") or not friend.get("object"):
+        await query.answer("Друг не зарегистрирован в боте.", show_alert=True)
+        return
+    if (owner.get("city"), owner.get("company"), owner.get("object")) != (friend.get("city"), friend.get("company"), friend.get("object")):
+        await query.answer("Друг должен быть на том же объекте.", show_alert=True)
+        return
+    pending["for_friend_id"] = friend_id
+    pending["for_friend_username"] = friend.get("username") or ""
+    pending["for_friend_full_name"] = friend.get("full_name") or friend.get("name") or ""
+    context.user_data["pending_replacement"] = pending
+    await _publish_from_pending(query, context, rid, pending)
+
+
+async def friends_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("friends:cancel:"):
+        return
+    await query.answer()
+    rid = query.data.replace("friends:cancel:", "", 1)
+    pending = context.user_data.get("pending_replacement")
+    if not pending or pending.get("id") != rid:
+        await query.edit_message_text("Сессия истекла.", reply_markup=main_menu_kb())
+        return
+    context.user_data.pop("pending_replacement", None)
+    await query.edit_message_text("Ок. Публикация отменена.", reply_markup=main_menu_kb())
 
 
 async def callback_update(update: Update, context: ContextTypes.DEFAULT_TYPE):

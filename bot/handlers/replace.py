@@ -2,16 +2,20 @@
 """Сценарий «Заменить»: список замен, заявка, принять/отклонить (автор), отказаться (принявший)."""
 
 from telegram import Update
+from datetime import timedelta
 from telegram.ext import ContextTypes
 
 import storage
+from bot.utils.access import check_object_access
 from keyboards import (
     replacements_list_kb,
     take_confirm_kb,
     creator_decide_kb,
     taker_wait_kb,
     replace_done_kb,
+    notify_supervisor_kb,
     main_menu_kb,
+    menu_quick_kb,
 )
 
 
@@ -33,6 +37,15 @@ async def act_replace(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await query.answer()
     uid = query.from_user.id if query.from_user else 0
+    user = storage.get_user(uid) or {}
+    city = user.get("city", "")
+    company = user.get("company", "")
+    obj = user.get("object", "")
+    if city and company and obj:
+        ok, reason = await check_object_access(context.bot, uid, city, company, obj)
+        if not ok:
+            await query.edit_message_text(reason, reply_markup=main_menu_kb())
+            return
     all_r = storage.get_replacements(active_only=True)
     replacements = _filter_for_user(all_r, uid)
     if not replacements:
@@ -72,6 +85,16 @@ async def take_replacement(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not query or not query.data or not query.data.startswith("take:"):
         return
     await query.answer()
+    uid = query.from_user.id if query.from_user else 0
+    user = storage.get_user(uid) or {}
+    city = user.get("city", "")
+    company = user.get("company", "")
+    obj = user.get("object", "")
+    if city and company and obj:
+        ok, reason = await check_object_access(context.bot, uid, city, company, obj)
+        if not ok:
+            await query.answer(reason, show_alert=True)
+            return
     rid = query.data.replace("take:", "", 1)
     r = storage.get_replacement_by_id(rid)
     if not r or r.get("confirmed") or not r.get("active"):
@@ -112,6 +135,7 @@ async def confirm_take(update: Update, context: ContextTypes.DEFAULT_TYPE):
     r["requested_by_id"] = uid
     r["requested_by_username"] = taker_username
     storage.save_replacement(r)
+    storage.sync_replacement_usernames(r)
 
     contact = f"@{taker_username}" if taker_username else f"ID: {uid}"
     msg_author = (
@@ -166,6 +190,20 @@ async def creator_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
     r["requested_by_id"] = None
     r["requested_by_username"] = None
     storage.save_replacement(r)
+    storage.sync_replacement_usernames(r)
+
+    # Кого заменяют: автора объявления или друга.
+    subject_id = r.get("for_friend_id") or author_id
+    subject_user = storage.get_user(int(subject_id)) or {}
+    # Данные пользователей (ФИО + куратор).
+    author_user = storage.get_user(author_id) or {}
+    taker_user = storage.get_user(taker_id) or {}
+    subject_full = subject_user.get("full_name") or subject_user.get("name") or ""
+    taker_full = taker_user.get("full_name") or taker_user.get("name") or ""
+    subject_sup = storage.get_supervisor_by_id(subject_user.get("supervisor_id") or 0) or {}
+    taker_sup = storage.get_supervisor_by_id(taker_user.get("supervisor_id") or 0) or {}
+    subject_sup_name = subject_sup.get("title") or "—"
+    taker_sup_name = taker_sup.get("title") or "—"
 
     contact_taker = f"@{taker_username}" if taker_username else f"ID: {taker_id}"
     contact_author = f"@{author_username}" if author_username else f"ID: {author_id}"
@@ -178,21 +216,135 @@ async def creator_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_author = (
         f"✅ Замена согласована.\n\n"
         f"{base_info}\n"
+        f"Заменяющий: {taker_full} ({contact_taker})\n"
+        f"Куратор заменяющего: {taker_sup_name}\n\n"
         f"Свяжитесь с заменяющим: {contact_taker}\n"
-        f"Можно отменить подтверждение."
+        f"Можно предупредить своего администратора."
     )
     msg_taker = (
         f"✅ Автор принял вашу заявку.\n\n"
         f"{base_info}\n"
+        f"Кого заменяете: {subject_full} ({contact_author})\n"
+        f"Куратор: {subject_sup_name}\n\n"
         f"Свяжитесь с автором: {contact_author}\n"
-        f"Можно отказаться от замены."
+        f"Ожидайте начала смены."
     )
 
-    await query.edit_message_text(msg_author, reply_markup=replace_done_kb(rid, is_creator=True))
+    # У автора: вместо обычной кнопки — предложить предупредить администратора.
+    await query.edit_message_text(msg_author, reply_markup=notify_supervisor_kb(rid))
+    # Заменяющему — всегда.
     try:
         await context.bot.send_message(chat_id=taker_id, text=msg_taker, reply_markup=replace_done_kb(rid, is_creator=False))
     except Exception:
         pass
+    # Кого заменяют (если это друг) — отправляем копию.
+    if str(subject_id) != str(author_id):
+        try:
+            await context.bot.send_message(
+                chat_id=subject_id,
+                text=(
+                    f"✅ Вам согласовали замену.\n\n"
+                    f"{base_info}\n"
+                    f"Заменяющий: {taker_full} ({contact_taker})\n"
+                    f"Ожидайте начала смены."
+                ),
+                reply_markup=menu_quick_kb(),
+            )
+        except Exception:
+            pass
+
+
+async def notify_supervisor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Автор замены нажимает: предупредить своего администратора/куратора."""
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("notify_sup:"):
+        return
+    await query.answer()
+    rid = query.data.replace("notify_sup:", "", 1)
+    r = storage.get_replacement_by_id(rid)
+    if not r or not r.get("confirmed"):
+        await query.answer("Замена не найдена или не согласована.", show_alert=True)
+        return
+    if r.get("start_notified"):
+        await query.answer("Смена уже началась, уведомление отправлять поздно.", show_alert=True)
+        return
+    uid = query.from_user.id if query.from_user else 0
+    if str(r.get("author_id")) != str(uid):
+        return
+    author_user = storage.get_user(uid) or {}
+    sup_id = author_user.get("supervisor_id")
+    if not sup_id:
+        await query.answer("У вас не выбран администратор.", show_alert=True)
+        return
+    sup = storage.get_supervisor_by_id(int(sup_id)) or {}
+    sup_tid = sup.get("telegram_id")
+    sup_username = (sup.get("username") or "").strip().lstrip("@")
+    if not sup_username or not sup_tid:
+        await query.answer("У администратора должны быть заданы @username и telegram_id.", show_alert=True)
+        return
+    # Проверяем, что @username актуален и соответствует telegram_id.
+    # Если сменился — обновляем автоматически по telegram_id.
+    try:
+        chat = await context.bot.get_chat(f"@{sup_username}")
+        if not chat or int(chat.id) != int(sup_tid):
+            chat_by_id = await context.bot.get_chat(int(sup_tid))
+            new_username = (getattr(chat_by_id, "username", None) or "").lstrip("@")
+            if not new_username:
+                await query.answer("У администратора нет @username. Нужен @username.", show_alert=True)
+                return
+            storage.update_supervisor_username(int(sup.get("id")), new_username)
+            sup_username = new_username
+    except Exception:
+        try:
+            chat_by_id = await context.bot.get_chat(int(sup_tid))
+            new_username = (getattr(chat_by_id, "username", None) or "").lstrip("@")
+            if new_username:
+                storage.update_supervisor_username(int(sup.get("id")), new_username)
+                sup_username = new_username
+        except Exception:
+            await query.answer("Не удалось проверить/обновить @username администратора.", show_alert=True)
+            return
+    taker_id = r.get("taken_by_id")
+    taker_user = storage.get_user(taker_id) or {}
+    taker_full = taker_user.get("full_name") or taker_user.get("name") or ""
+    taker_username = r.get("taken_by_username") or ""
+    taker_contact = f"@{taker_username}" if taker_username else f"ID: {taker_id}"
+    # Когда: сегодня / завтра / дата
+    from datetime import date as _date
+    when = r.get("date_text") or ""
+    try:
+        d = _date.fromisoformat(r.get("date_from") or "")
+        today = _date.today()
+        if d == today:
+            when = "сегодня"
+        elif d == today + timedelta(days=1):
+            when = "завтра"
+        else:
+            when = d.strftime("%d.%m.%Y")
+    except Exception:
+        pass
+    msg = (
+        f"Привет! Меня {when} заменит {taker_full} ({taker_contact}).\n\n"
+        f"Позиция: {r.get('position')}\n"
+        f"Смена: {r.get('shift')}\n"
+        f"Объект: {r.get('object')}"
+    )
+
+    # 1) Отправляем пользователю текст для копирования
+    try:
+        await query.message.reply_text(msg)
+    except Exception:
+        await query.answer("Не удалось показать текст.", show_alert=True)
+        return
+
+    # 2) Отдельно — инструкция и кнопка перехода к администратору
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    url = f"https://t.me/{sup_username}"
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Перейти к администратору", url=url)]])
+    await query.message.reply_text(
+        "Скопируйте сообщение выше и нажмите кнопку, чтобы открыть чат с администратором.",
+        reply_markup=kb,
+    )
 
 
 async def creator_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
