@@ -162,6 +162,15 @@ async def cmd_help(update: Update, context):
     await update.message.reply_text(text, reply_markup=main_menu_kb())
 
 
+async def cmd_chatid(update: Update, context):
+    """Служебная команда: показать chat_id текущего чата."""
+    chat = update.effective_chat
+    msg = update.effective_message
+    if not chat or not msg:
+        return
+    await msg.reply_text(f"chat_id: {chat.id}\ntype: {chat.type}")
+
+
 # --- Планировщик задач: дайджесты и старт смен ---
 
 
@@ -345,6 +354,7 @@ def main():
     app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("admin", admin_handlers.admin_command))
+    app.add_handler(CommandHandler("chatid", cmd_chatid))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_dispatch))
 
     app.add_handler(CallbackQueryHandler(menu_handlers.back_main, pattern="^back:main$"))

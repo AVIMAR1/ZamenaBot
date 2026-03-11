@@ -478,10 +478,12 @@ async def admin_supervisor_add_text(update: Update, context: ContextTypes.DEFAUL
     if not username or not tid:
         await update.message.reply_text("Нужно указать и @username, и telegram_id.", reply_markup=admin_main_kb())
         return
-    # Проверяем, что username действительно принадлежит этому telegram_id
+    # Проверяем, что username действительно принадлежит этому telegram_id.
+    # Идём к Telegram по ID (надёжнее), а username сверяем из ответа.
     try:
-        chat = await context.bot.get_chat(f"@{username}")
-        if not chat or int(chat.id) != int(tid):
+        chat = await context.bot.get_chat(tid)
+        real_username = (chat.username or "").lstrip("@")
+        if real_username.lower() != username.lower():
             await update.message.reply_text(
                 "Проверка не пройдена: @username не соответствует telegram_id.\n"
                 "Проверьте данные и попробуйте снова.",
@@ -490,7 +492,7 @@ async def admin_supervisor_add_text(update: Update, context: ContextTypes.DEFAUL
             return
     except Exception:
         await update.message.reply_text(
-            "Не удалось проверить @username (возможно, неверный username или ограничения Telegram).",
+            "Не удалось проверить @username (возможно, неверный telegram_id или ограничения Telegram).",
             reply_markup=admin_main_kb(),
         )
         return
