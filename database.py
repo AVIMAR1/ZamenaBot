@@ -435,7 +435,7 @@ def get_users_page(city: str | None = None, company: str | None = None, obj: str
     return [dict(r) for r in rows], total
 
 
-# --- Supervisors (администраторы/кураторы) ---
+# --- Supervisors (администраторы) ---
 def get_supervisors() -> list:
     with _lock:
         cur = _get_conn().execute("SELECT * FROM supervisors ORDER BY id DESC")

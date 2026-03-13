@@ -696,7 +696,7 @@ async def admin_supervisors(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     sups = storage.get_supervisors()
     await query.edit_message_text(
-        f"Администраторы/кураторы: {len(sups)}",
+        f"Администраторы: {len(sups)}",
         reply_markup=admin_supervisors_kb(sups),
     )
 
@@ -1193,8 +1193,8 @@ async def shiftrep_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         taker_link = taker_contact if taker_contact.startswith("@") else f"tg://user?id={taker_id}"
         subject_link = subject_contact if subject_contact.startswith("@") else f"tg://user?id={subject_id}"
         rows.append(
-            f"- {taker_name} ({taker_contact}, куратор: {taker_sup_name})\n"
-            f"  → {subject_name} ({subject_contact}, куратор: {subject_sup_name})\n"
+            f"- {taker_name} ({taker_contact}, администратор: {taker_sup_name})\n"
+            f"  → {subject_name} ({subject_contact}, администратор: {subject_sup_name})\n"
             f"  Позиция: {r.get('position')}{pay}\n"
             f"  Ссылки: {taker_link} → {subject_link}"
         )

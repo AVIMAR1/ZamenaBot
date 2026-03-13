@@ -278,7 +278,7 @@ async def creator_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def notify_supervisor(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Автор замены нажимает: предупредить своего администратора/куратора."""
+    """Автор замены нажимает: предупредить своего администратора."""
     query = update.callback_query
     if not query or not query.data or not query.data.startswith("notify_sup:"):
         return

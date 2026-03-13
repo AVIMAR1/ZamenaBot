@@ -13,7 +13,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-from telegram import BotCommand
+from telegram import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats, BotCommandScopeAllChatAdministrators
 
 import config
 import database  # инициализация БД при импорте
@@ -441,13 +441,19 @@ async def shifts_start_job(context):
 
 def main():
     async def post_init(app_: Application):
-        # Команды, чтобы пользователю всегда было куда вернуться (/menu).
-        await app_.bot.set_my_commands([
-            BotCommand("start", "Запуск / регистрация"),
-            BotCommand("menu", "Главное меню"),
-            BotCommand("help", "Справка"),
-            BotCommand("admin", "Админка (только для админа)"),
-        ])
+        # Команды показываем только в личных чатах.
+        await app_.bot.set_my_commands(
+            [
+                BotCommand("start", "Запуск / регистрация"),
+                BotCommand("menu", "Главное меню"),
+                BotCommand("help", "Справка"),
+                BotCommand("admin", "Админка (только для админа)"),
+            ],
+            scope=BotCommandScopeAllPrivateChats(),
+        )
+        # В группах и у администраторов групп список команд очищаем.
+        await app_.bot.set_my_commands([], scope=BotCommandScopeAllGroupChats())
+        await app_.bot.set_my_commands([], scope=BotCommandScopeAllChatAdministrators())
 
     app = Application.builder().token(config.BOT_TOKEN).post_init(post_init).build()
 

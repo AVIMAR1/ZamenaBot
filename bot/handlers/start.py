@@ -134,7 +134,7 @@ async def callback_object(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def full_name_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сохранение ФИО и выбор администратора/куратора."""
+    """Сохранение ФИО и выбор администратора."""
     if not update.message or not context.user_data.get("waiting_full_name"):
         return
     context.user_data.pop("waiting_full_name", None)
@@ -161,7 +161,7 @@ async def full_name_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     await update.message.reply_text(
-        "Выберите вашего администратора/куратора:",
+        "Выберите вашего администратора:",
         reply_markup=supervisors_kb(supervisors),
     )
 

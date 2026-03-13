@@ -51,6 +51,7 @@ def main_menu_kb():
     """Главное меню пользователя."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔍 Мне нужна замена", callback_data="act:find")],
+        [InlineKeyboardButton("🔄 Выйду на замену", callback_data="act:replace")],
         [
             InlineKeyboardButton("👤 Профиль", callback_data="menu:profile"),
             InlineKeyboardButton("⚙️ Настройки", callback_data="menu:settings"),
@@ -64,7 +65,7 @@ def shift_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Дневная", callback_data="shift:day")],
         [InlineKeyboardButton("Ночная", callback_data="shift:night")],
-        [InlineKeyboardButton("🙋 Готовы выйти на замену", callback_data="offers:menu")],
+        [InlineKeyboardButton("🙋 Готовы заменить (список)", callback_data="offers:list")],
         [InlineKeyboardButton("« Назад", callback_data="back:main")],
     ])
 
@@ -824,7 +825,7 @@ def notify_supervisor_kb(rid: str):
 
 
 def supervisors_kb(supervisors: list):
-    """Выбор администратора/куратора при регистрации."""
+    """Выбор администратора при регистрации."""
     rows = []
     for s in supervisors:
         sid = s.get("id")
