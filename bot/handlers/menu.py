@@ -45,6 +45,9 @@ async def back_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await query.answer()
     context.user_data.pop("pending_replacement", None)
+    # Сбрасываем режимы ввода, чтобы не создавались тикеты/действия после выхода в меню.
+    context.user_data.pop("waiting_support", None)
+    context.user_data.pop("waiting_support_reply_tid", None)
     await query.edit_message_text("Главное меню:", reply_markup=main_menu_kb())
 
 

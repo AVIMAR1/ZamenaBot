@@ -22,6 +22,8 @@ from database import (
     get_tickets,
     get_ticket_by_id,
     save_ticket,
+    delete_ticket,
+    reset_user_registration,
     get_cities,
     get_companies,
     get_objects,

@@ -537,6 +537,7 @@ def main():
 
     app.add_handler(CallbackQueryHandler(support_handlers.menu_support, pattern="^(menu:support|support:new)$"))
     app.add_handler(CallbackQueryHandler(support_handlers.support_reply_start, pattern="^support:reply:"))
+    app.add_handler(CallbackQueryHandler(support_handlers.support_cancel, pattern="^support:cancel$"))
 
     app.add_handler(CallbackQueryHandler(reviews_handlers.menu_reviews, pattern="^menu:reviews$"))
     app.add_handler(CallbackQueryHandler(reviews_handlers.review_add, pattern="^review:add$"))
@@ -589,6 +590,7 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_ticket_detail, pattern="^admin:t:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_reply, pattern="^admin:reply:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_close_ticket, pattern="^admin:close:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_delete_ticket, pattern="^admin:del:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_users, pattern="^admin:users$"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_users_page, pattern="^admin:usersp:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_users_filterobj, pattern="^admin:users:filterobj$"))
@@ -600,6 +602,8 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_userban_cancel, pattern="^admin:userban_cancel$"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_userunban, pattern="^admin:userunban:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_userprofile, pattern="^admin:userprofile:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_unreg_prompt, pattern="^admin:unreg:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_unreg_confirm, pattern="^admin:unreg_(yes|no):"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_warn_prompt, pattern="^admin:warn:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_msg_prompt, pattern="^admin:msg:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_trust_adjust, pattern="^admin:trust:"))

@@ -29,6 +29,7 @@ from keyboards import (
     admin_users_nav_kb,
     admin_users_list_kb,
     admin_user_profile_kb,
+    admin_unreg_confirm_kb,
     admin_userban_cancel_kb,
     admin_users_filter_cities_kb,
     admin_users_filter_companies_kb,
@@ -241,6 +242,19 @@ async def admin_close_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
     except Exception:
         pass
+
+
+async def admin_delete_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("admin:del:"):
+        return
+    uid = query.from_user.id if query.from_user else 0
+    if not _is_admin(uid):
+        return
+    await query.answer()
+    tid = query.data.replace("admin:del:", "", 1)
+    storage.delete_ticket(tid)
+    await query.edit_message_text("Тикет удалён.", reply_markup=admin_tickets_kb())
 
 
 async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -520,6 +534,41 @@ async def admin_userprofile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Бан: {u.get('banned_until') or '—'}"
     )
     await query.edit_message_text(text, reply_markup=admin_user_profile_kb(target_id))
+
+
+async def admin_unreg_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("admin:unreg:"):
+        return
+    uid = query.from_user.id if query.from_user else 0
+    if not _is_admin(uid):
+        return
+    await query.answer()
+    target_id = int(query.data.replace("admin:unreg:", "", 1))
+    await query.edit_message_text(
+        "Снять регистрацию с пользователя?\n"
+        "Он будет вынужден пройти /start заново.",
+        reply_markup=admin_unreg_confirm_kb(target_id),
+    )
+
+
+async def admin_unreg_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("admin:unreg_"):
+        return
+    uid = query.from_user.id if query.from_user else 0
+    if not _is_admin(uid):
+        return
+    await query.answer()
+    parts = query.data.split(":")
+    action = parts[0]  # admin:unreg_yes or admin:unreg_no
+    target_id = int(parts[1]) if len(parts) > 1 else 0
+    if action == "admin:unreg_no":
+        await query.edit_message_text("Отменено.", reply_markup=admin_main_kb())
+        return
+    if target_id:
+        storage.reset_user_registration(int(target_id))
+        await query.edit_message_text("Регистрация снята.", reply_markup=admin_main_kb())
 
 
 async def admin_warn_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):

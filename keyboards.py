@@ -558,6 +558,13 @@ def support_kb():
     ])
 
 
+def support_cancel_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Отмена", callback_data="support:cancel")],
+        [InlineKeyboardButton("🏠 Меню", callback_data="back:main")],
+    ])
+
+
 def admin_main_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Тикеты", callback_data="admin:tickets")],
@@ -798,6 +805,7 @@ def ticket_actions_kb(tid: str):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💬 Ответить", callback_data=f"admin:reply:{tid}")],
         [InlineKeyboardButton("✅ Закрыть тикет", callback_data=f"admin:close:{tid}")],
+        [InlineKeyboardButton("🗑 Удалить тикет", callback_data=f"admin:del:{tid}")],
         [InlineKeyboardButton("« К тикетам", callback_data="admin:tickets")],
     ])
 
@@ -915,6 +923,7 @@ def admin_user_profile_kb(uid: int):
             InlineKeyboardButton("⚠ Предупреждение", callback_data=f"admin:warn:{uid}"),
             InlineKeyboardButton("✉ Сообщение", callback_data=f"admin:msg:{uid}"),
         ],
+        [InlineKeyboardButton("♻️ Снять регистрацию", callback_data=f"admin:unreg:{uid}")],
         [
             InlineKeyboardButton("➕ Доверие +5", callback_data=f"admin:trust:+5:{uid}"),
             InlineKeyboardButton("➖ Доверие -5", callback_data=f"admin:trust:-5:{uid}"),
@@ -925,6 +934,15 @@ def admin_user_profile_kb(uid: int):
             InlineKeyboardButton("✏️ Ввести", callback_data=f"admin:trust:set:{uid}"),
         ],
         [InlineKeyboardButton("« К пользователям", callback_data="admin:users")],
+    ])
+
+
+def admin_unreg_confirm_kb(uid: int):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Да, снять", callback_data=f"admin:unreg_yes:{uid}"),
+            InlineKeyboardButton("❌ Отмена", callback_data=f"admin:unreg_no:{uid}"),
+        ],
     ])
 
 

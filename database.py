@@ -762,6 +762,25 @@ def save_ticket(ticket: dict):
         _get_conn().commit()
 
 
+def delete_ticket(tid: str):
+    with _lock:
+        _get_conn().execute("DELETE FROM tickets WHERE id=?", (tid,))
+        _get_conn().commit()
+
+
+def reset_user_registration(telegram_id: int):
+    """Снять регистрацию: пользователь будет проходить /start заново."""
+    with _lock:
+        _get_conn().execute(
+            """UPDATE users
+               SET city=NULL, company=NULL, object=NULL,
+                   full_name=NULL, supervisor_id=NULL
+               WHERE telegram_id=?""",
+            (telegram_id,),
+        )
+        _get_conn().commit()
+
+
 # --- Object shift types (per object: day/night start/end) ---
 def get_object_shift(city: str, company: str, object_name: str, shift_key: str) -> Optional[dict]:
     with _lock:

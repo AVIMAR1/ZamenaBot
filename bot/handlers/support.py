@@ -8,7 +8,7 @@ from telegram.ext import ContextTypes
 
 import config
 import storage
-from keyboards import support_kb, main_menu_kb, back_to_main_kb, admin_quick_reply_ticket_kb
+from keyboards import support_kb, main_menu_kb, back_to_main_kb, admin_quick_reply_ticket_kb, support_cancel_kb
 
 
 def _is_support_banned(user: dict) -> tuple[bool, str]:
@@ -41,9 +41,19 @@ async def menu_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await query.edit_message_text(
         "Напишите ваше обращение в поддержку (одним сообщением):",
-        reply_markup=back_to_main_kb(),
+        reply_markup=support_cancel_kb(),
     )
     context.user_data["waiting_support"] = True
+
+
+async def support_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or query.data != "support:cancel":
+        return
+    await query.answer()
+    context.user_data.pop("waiting_support", None)
+    context.user_data.pop("waiting_support_reply_tid", None)
+    await query.edit_message_text("Отменено. Главное меню:", reply_markup=main_menu_kb())
 
 
 async def support_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -99,7 +109,7 @@ async def support_reply_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["waiting_support_reply_tid"] = tid
     await query.edit_message_text(
         "Напишите ваш ответ. Он будет добавлен в тикет и отправлен поддержке:",
-        reply_markup=back_to_main_kb(),
+        reply_markup=support_cancel_kb(),
     )
 
 
