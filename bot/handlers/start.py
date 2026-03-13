@@ -17,6 +17,10 @@ from keyboards import (
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Регистрация и основная работа — только в личных сообщениях.
+    chat = update.effective_chat
+    if chat and chat.type != "private":
+        return
     if update.effective_user is None:
         return
     user = update.effective_user

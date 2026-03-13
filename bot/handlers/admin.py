@@ -71,6 +71,10 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /admin — вход в админ-панель."""
     if not update.message or not update.effective_user:
         return
+    chat = update.effective_chat
+    # Админ-панель только в личных сообщениях, в группах не открываем.
+    if chat and chat.type != "private":
+        return
     uid = update.effective_user.id
     if not _is_admin(uid):
         await update.message.reply_text("Нет доступа к админ-панели.")
@@ -710,7 +714,8 @@ async def admin_supervisor_add(update: Update, context: ContextTypes.DEFAULT_TYP
         "Введите администратора в формате:\n"
         "Название | @username | telegram_id\n"
         "Пример: Иванов И.И. | @boss_admin | 123456789\n"
-        "Важно: @username проверяется по telegram_id (должны совпадать).",
+        "Важно: @username проверяется по telegram_id (должны совпадать).\n"
+        "Для отмены введите слово Отмена.",
     )
 
 
@@ -723,6 +728,9 @@ async def admin_supervisor_add_text(update: Update, context: ContextTypes.DEFAUL
     if not _is_admin(uid):
         return
     raw = (update.message.text or "").strip()
+    if raw.lower() in {"отмена", "cancel"}:
+        await update.message.reply_text("Добавление администратора отменено.", reply_markup=admin_main_kb())
+        return
     parts = [p.strip() for p in raw.split("|")]
     title = parts[0] if parts else ""
     username = None
@@ -778,6 +786,93 @@ async def admin_supervisor_del(update: Update, context: ContextTypes.DEFAULT_TYP
     storage.delete_supervisor(sid)
     sups = storage.get_supervisors()
     await query.edit_message_text("Обновлено.", reply_markup=admin_supervisors_kb(sups))
+
+
+async def admin_supervisor_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начало редактирования администратора."""
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("admin:supervisoredit:"):
+        return
+    uid = query.from_user.id if query.from_user else 0
+    if not _is_admin(uid):
+        return
+    await query.answer()
+    try:
+        sid = int(query.data.replace("admin:supervisoredit:", "", 1))
+    except ValueError:
+        return
+    sup = storage.get_supervisor_by_id(sid)
+    if not sup:
+        await query.answer("Администратор не найден.", show_alert=True)
+        return
+    context.user_data["admin_supervisor_edit_id"] = sid
+    username = sup.get("username") or ""
+    tid = sup.get("telegram_id") or ""
+    await query.edit_message_text(
+        "Редактирование администратора.\n"
+        "Текущие данные:\n"
+        f"Название: {sup.get('title') or '—'}\n"
+        f"@username: @{username or '—'}\n"
+        f"telegram_id: {tid or '—'}\n\n"
+        "Введите НОВЫЕ данные в формате:\n"
+        "Название | @username | telegram_id\n"
+        "Или введите Отмена для выхода.",
+    )
+
+
+async def admin_supervisor_edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Приём новых данных администратора."""
+    if not update.message:
+        return
+    sid = context.user_data.pop("admin_supervisor_edit_id", None)
+    if not sid:
+        return
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return
+    raw = (update.message.text or "").strip()
+    if raw.lower() in {"отмена", "cancel"}:
+        sups = storage.get_supervisors()
+        await update.message.reply_text("Редактирование отменено.", reply_markup=admin_supervisors_kb(sups))
+        return
+    parts = [p.strip() for p in raw.split("|")]
+    title = parts[0] if parts else ""
+    username = None
+    tid = None
+    if len(parts) >= 2 and parts[1]:
+        username = parts[1].lstrip("@")
+    if len(parts) >= 3 and parts[2]:
+        try:
+            tid = int(parts[2])
+        except ValueError:
+            tid = None
+    if not title:
+        sups = storage.get_supervisors()
+        await update.message.reply_text("Пустое название. Изменения не сохранены.", reply_markup=admin_supervisors_kb(sups))
+        return
+    # Если указаны и username, и tid — проверяем соответствие так же, как при добавлении.
+    if username and tid:
+        try:
+            chat = await context.bot.get_chat(tid)
+            real_username = (chat.username or "").lstrip("@")
+            if real_username.lower() != username.lower():
+                sups = storage.get_supervisors()
+                await update.message.reply_text(
+                    "Проверка не пройдена: @username не соответствует telegram_id.\n"
+                    "Проверьте данные и попробуйте снова.",
+                    reply_markup=admin_supervisors_kb(sups),
+                )
+                return
+        except Exception:
+            sups = storage.get_supervisors()
+            await update.message.reply_text(
+                "Не удалось проверить @username (возможно, неверный telegram_id или ограничения Telegram).",
+                reply_markup=admin_supervisors_kb(sups),
+            )
+            return
+    storage.update_supervisor(int(sid), title, username, tid)
+    sups = storage.get_supervisors()
+    await update.message.reply_text("Администратор обновлён.", reply_markup=admin_supervisors_kb(sups))
 
 
 async def admin_reset_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1153,7 +1248,8 @@ async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     context.user_data["admin_broadcast_waiting"] = True
     await query.edit_message_text(
-        "Введите текст рассылки (одним сообщением). Его получат все пользователи бота:"
+        "Введите текст рассылки (одним сообщением). Его получат все пользователи бота.\n"
+        "Чтобы отменить рассылку, введите Отмена."
     )
 
 
@@ -1166,6 +1262,9 @@ async def admin_broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYP
     if not _is_admin(uid):
         return
     text = (update.message.text or "").strip()
+    if text.lower() in {"отмена", "cancel"}:
+        await update.message.reply_text("Рассылка отменена.", reply_markup=admin_main_kb())
+        return
     if not text:
         await update.message.reply_text("Пусто. Рассылка отменена.", reply_markup=admin_main_kb())
         return

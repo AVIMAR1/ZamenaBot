@@ -58,6 +58,7 @@ from database import (
     delete_supervisor,
     get_supervisor_by_id,
     update_supervisor_username,
+    update_supervisor,
     # Object access
     get_object_access,
     set_object_access_mode,

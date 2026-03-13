@@ -476,6 +476,18 @@ def update_supervisor_username(sid: int, username: str):
         _get_conn().commit()
 
 
+def update_supervisor(sid: int, title: str, username: str | None, telegram_id: int | None):
+    """Полное редактирование администратора: название, username, telegram_id."""
+    title = (title or "").strip()
+    username = (username or "").strip().lstrip("@") if username else None
+    with _lock:
+        _get_conn().execute(
+            "UPDATE supervisors SET title=?, username=?, telegram_id=? WHERE id=?",
+            (title, username, telegram_id, sid),
+        )
+        _get_conn().commit()
+
+
 # --- Object access requirements (groups/channels membership) ---
 def get_object_access(city: str, company: str, object_name: str) -> dict:
     with _lock:

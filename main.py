@@ -97,6 +97,10 @@ async def message_dispatch(update: Update, context):
                 return
     except Exception:
         pass
+    # В группах и каналах бот на обычные сообщения не отвечает (вся логика только в личке).
+    chat = update.effective_chat
+    if chat and chat.type != "private":
+        return
     # До регистрации запрещаем любые текстовые команды/сообщения, кроме flow /start (кнопки города/компании/объекта идут callback'ами).
     try:
         u = update.effective_user
@@ -197,6 +201,9 @@ async def cmd_menu(update: Update, context):
     """Команда /menu — показать главное меню."""
     if not update.message:
         return
+    chat = update.effective_chat
+    if chat and chat.type != "private":
+        return
     uid = update.effective_user.id if update.effective_user else 0
     user = storage.get_user(uid) if uid else None
     if not _is_user_registered(user):
@@ -213,6 +220,9 @@ async def cmd_menu(update: Update, context):
 async def cmd_help(update: Update, context):
     """Команда /help — краткая справка."""
     if not update.message:
+        return
+    chat = update.effective_chat
+    if chat and chat.type != "private":
         return
     uid = update.effective_user.id if update.effective_user else 0
     user = storage.get_user(uid) if uid else None
@@ -240,6 +250,16 @@ async def cmd_chatid(update: Update, context):
     msg = update.effective_message
     if not chat or not msg:
         return
+    # В группах/каналах отвечаем только один раз за время работы бота.
+    if chat.type != "private":
+        data = context.application.bot_data.setdefault("chatid_reported", set())
+        try:
+            key = int(chat.id)
+        except Exception:
+            key = chat.id
+        if key in data:
+            return
+        data.add(key)
     await msg.reply_text(f"chat_id: {chat.id}\ntype: {chat.type}")
 
 
@@ -529,6 +549,7 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_supervisors, pattern="^admin:supervisors$"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_supervisor_add, pattern="^admin:supervisoradd$"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_supervisor_del, pattern="^admin:supervisordel:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_supervisor_edit, pattern="^admin:supervisoredit:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_reset_users, pattern="^admin:resetusers$"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_reset_users_confirm, pattern="^admin:resetusers:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_objaccess, pattern="^admin:objaccess$"))

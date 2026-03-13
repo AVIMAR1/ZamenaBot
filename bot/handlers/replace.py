@@ -418,29 +418,31 @@ async def taker_refuse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Смена уже началась, отказаться от замены нельзя.", show_alert=True)
         return
     author_id = r.get("author_id")
-    # Доверие: штраф за отказ того, кто принял/подал заявку (uid).
-    try:
-        from datetime import date, timedelta
+    was_confirmed = bool(r.get("confirmed"))
+    # Доверие: штраф только за отказ от уже СОГЛАСОВАННОЙ замены.
+    if was_confirmed:
+        try:
+            from datetime import date, timedelta
 
-        u = storage.get_user(int(uid)) or {"telegram_id": int(uid)}
-        trust = float(u.get("trust_score", 50) or 50)
-        trust = max(0.0, min(100.0, trust - 10.0))
-        u["trust_score"] = trust
+            u = storage.get_user(int(uid)) or {"telegram_id": int(uid)}
+            trust = float(u.get("trust_score", 50) or 50)
+            trust = max(0.0, min(100.0, trust - 10.0))
+            u["trust_score"] = trust
 
-        today = date.today().isoformat()
-        if u.get("daily_refuse_date") != today:
-            u["daily_refuse_date"] = today
-            u["daily_refuse_count"] = 0
-        u["daily_refuse_count"] = int(u.get("daily_refuse_count", 0) or 0) + 1
+            today = date.today().isoformat()
+            if u.get("daily_refuse_date") != today:
+                u["daily_refuse_date"] = today
+                u["daily_refuse_count"] = 0
+            u["daily_refuse_count"] = int(u.get("daily_refuse_count", 0) or 0) + 1
 
-        # Автобан: 2 отказа за сутки → бан 7 дней + доп. штраф доверия -15.
-        if int(u["daily_refuse_count"]) >= 2:
-            u["banned_until"] = (date.today() + timedelta(days=7)).isoformat()
-            trust2 = float(u.get("trust_score", 50) or 50)
-            u["trust_score"] = max(0.0, min(100.0, trust2 - 15.0))
-        storage.save_user(int(uid), u)
-    except Exception:
-        pass
+            # Автобан: 2 отказа за сутки → бан 7 дней + доп. штраф доверия -15.
+            if int(u["daily_refuse_count"]) >= 2:
+                u["banned_until"] = (date.today() + timedelta(days=7)).isoformat()
+                trust2 = float(u.get("trust_score", 50) or 50)
+                u["trust_score"] = max(0.0, min(100.0, trust2 - 15.0))
+            storage.save_user(int(uid), u)
+        except Exception:
+            pass
     r["confirmed"] = False
     r["taken_by_id"] = None
     r["taken_by_username"] = None
