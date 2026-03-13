@@ -247,9 +247,8 @@ def take_confirm_kb(rid: str):
 
 def offers_menu_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 Список замен", callback_data="replace:list")],
+        [InlineKeyboardButton("📋 Выбрать из списка", callback_data="replace:list")],
         [InlineKeyboardButton("➕ Предложить выйти на замену", callback_data="offers:create")],
-        [InlineKeyboardButton("🙋 Готовы выйти на замену (список)", callback_data="offers:list")],
         [InlineKeyboardButton("📌 Мои предложения", callback_data="offers:mine")],
         [InlineKeyboardButton("« В меню", callback_data="back:main")],
     ])
