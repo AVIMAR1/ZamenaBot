@@ -263,28 +263,28 @@ def offer_shift_kb():
 
 
 def offer_calendar_kb(year: int, month: int, shift_key: str, single: int, step: int = 0):
-    \"\"\"Календарь для offers. callback: offerdate:YYYY:MM:DD:shift:single:step\"\"\"
+    """Календарь для offers. callback: offerdate:YYYY:MM:DD:shift:single:step"""
     import calendar
     from datetime import datetime
 
     cal = calendar.Calendar(firstweekday=0)
     days = list(cal.itermonthdays(year, month))
-    header = [InlineKeyboardButton(f\"{year} / {month}\", callback_data=\"noop\")]
+    header = [InlineKeyboardButton(f"{year} / {month}", callback_data="noop")]
 
-    weekdays = [\"Пн\", \"Вт\", \"Ср\", \"Чт\", \"Пт\", \"Сб\", \"Вс\"]
-    header_row = [InlineKeyboardButton(d, callback_data=\"noop\") for d in weekdays]
+    weekdays = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    header_row = [InlineKeyboardButton(d, callback_data="noop") for d in weekdays]
     rows = [header, header_row]
 
     row = []
     now = datetime.now()
     for d in days:
         if d == 0:
-            row.append(InlineKeyboardButton(\" \", callback_data=\"noop\"))
+            row.append(InlineKeyboardButton(" ", callback_data="noop"))
         else:
             if year == now.year and month == now.month and d < now.day:
-                row.append(InlineKeyboardButton(str(d), callback_data=\"noop\"))
+                row.append(InlineKeyboardButton(str(d), callback_data="noop"))
             else:
-                cb = f\"offerdate:{year}:{month}:{d}:{shift_key}:{single}:{step}\"
+                cb = f"offerdate:{year}:{month}:{d}:{shift_key}:{single}:{step}"
                 row.append(InlineKeyboardButton(str(d), callback_data=cb))
         if len(row) == 7:
             rows.append(row)
@@ -305,14 +305,14 @@ def offer_calendar_kb(year: int, month: int, shift_key: str, single: int, step: 
         if prev_month == 0:
             prev_year -= 1
             prev_month = 12
-        nav.append(InlineKeyboardButton(\"◀\", callback_data=f\"offercal:{prev_year}:{prev_month}:{shift_key}:{single}:{step}\"))
-    nav.append(InlineKeyboardButton(\"« Назад\", callback_data=\"offers:menu\"))
+        nav.append(InlineKeyboardButton("◀", callback_data=f"offercal:{prev_year}:{prev_month}:{shift_key}:{single}:{step}"))
+    nav.append(InlineKeyboardButton("« Назад", callback_data="offers:menu"))
     if (year, month) < (max_year, max_month):
         next_year, next_month = year, month + 1
         if next_month == 13:
             next_year += 1
             next_month = 1
-        nav.append(InlineKeyboardButton(\"▶\", callback_data=f\"offercal:{next_year}:{next_month}:{shift_key}:{single}:{step}\"))
+        nav.append(InlineKeyboardButton("▶", callback_data=f"offercal:{next_year}:{next_month}:{shift_key}:{single}:{step}"))
     rows.append(nav)
     return InlineKeyboardMarkup(rows)
 

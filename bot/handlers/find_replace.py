@@ -112,30 +112,30 @@ async def _publish_from_pending(query, context: ContextTypes.DEFAULT_TYPE, rid: 
             if replacement.get("position") in pos:
                 matches.append(o)
         if matches:
-            # готовым выйти — отправляем кнопку \"подать заявку\" (через take-flow)
+            # готовым выйти — отправляем кнопку "подать заявку" (через take-flow)
             from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 
             rows = []
             for o in matches[:10]:
                 uid = o.get("author_id")
                 author = storage.get_user(int(uid)) or {}
-                name = author.get("full_name") or author.get("name") or f\"ID {uid}\"
-                rows.append([InlineKeyboardButton(f\"{name} — подать заявку\", callback_data=f\"take:{rid}\")])
-            rows.append([InlineKeyboardButton(\"🏠 Меню\", callback_data=\"back:main\")])
+                name = author.get("full_name") or author.get("name") or f"ID {uid}"
+                rows.append([InlineKeyboardButton(f"{name} — подать заявку", callback_data=f"take:{rid}")])
+            rows.append([InlineKeyboardButton("🏠 Меню", callback_data="back:main")])
             for o in matches[:10]:
                 try:
                     await context.bot.send_message(
-                        chat_id=o.get(\"author_id\"),
-                        text=\"🔔 Нашлось объявление, которое подходит под ваше предложение выйти на замену. Нажмите, чтобы подать заявку:\",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(\"Подать заявку\", callback_data=f\"take:{rid}\")]]),
+                        chat_id=o.get("author_id"),
+                        text="🔔 Нашлось объявление, которое подходит под ваше предложение выйти на замену. Нажмите, чтобы подать заявку:",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Подать заявку", callback_data=f"take:{rid}")]]),
                     )
                 except Exception:
                     pass
             # автору объявления — информируем
             try:
                 await context.bot.send_message(
-                    chat_id=replacement.get(\"author_id\"),
-                    text=\"🔔 Нашёлся человек, готовый выйти на замену по вашему объявлению. Ожидайте заявку в боте.\",
+                    chat_id=replacement.get("author_id"),
+                    text="🔔 Нашёлся человек, готовый выйти на замену по вашему объявлению. Ожидайте заявку в боте.",
                     reply_markup=menu_quick_kb(),
                 )
             except Exception:
