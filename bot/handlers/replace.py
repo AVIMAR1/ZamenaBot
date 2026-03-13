@@ -148,18 +148,19 @@ async def confirm_take(update: Update, context: ContextTypes.DEFAULT_TYPE):
     storage.sync_replacement_usernames(r)
 
     contact = f"@{taker_username}" if taker_username else f"ID: {uid}"
+    pay_part = ""
+    if r.get("pay_enabled"):
+        pay_part = (
+            f"💰 Доплата: {r.get('pay_amount_byn') or '—'} BYN\n"
+            f"⚠ Будьте осторожны с оплатами.\n\n"
+        )
     msg_author = (
         f"📩 Заявка на замену от {contact}\n\n"
         f"Позиция: {r.get('position')}\n"
         f"Смена: {r.get('shift')}\n"
         f"Дата: {r.get('date_text')}\n"
         f"Объект: {r.get('object')}\n\n"
-        + (
-            f"💰 Доплата: {r.get('pay_amount_byn') or '—'} BYN\n"
-            f"⚠ Будьте осторожны с оплатами.\n\n"
-            if r.get("pay_enabled")
-            else ""
-        )
+        f"{pay_part}"
         f"Принять или отклонить?"
     )
     await query.edit_message_text(
