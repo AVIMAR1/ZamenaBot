@@ -25,7 +25,10 @@ async def menu_reviews(update: Update, context: ContextTypes.DEFAULT_TYPE):
     existing = storage.get_review_by_user(uid)
     count = storage.get_reviews_count()
     avg = storage.get_reviews_avg_rating()
-    text = f"⭐ Отзывы\n\nСредняя оценка: {avg:.1f} ({count} отзывов)."
+    text = (
+        "⭐ Отзывы о работе бота ZamenaBot\n\n"
+        f"Средняя оценка: {avg:.1f} ({count} отзывов)."
+    )
     await query.edit_message_text(text, reply_markup=reviews_main_kb(bool(existing)))
 
 

@@ -7,6 +7,7 @@ from telegram.ext import ContextTypes
 import config
 import storage
 import config
+from bot.utils.access import check_object_access
 from keyboards import (
     main_menu_kb,
     city_kb,
@@ -56,11 +57,19 @@ async def menu_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = storage.get_user(uid) or {}
     replaced = user.get("replaced_count", 0)
     was_replaced = user.get("was_replaced_count", 0)
+    city, company, obj = user.get("city"), user.get("company"), user.get("object")
+    verified = "—"
+    if city and company and obj:
+        ok, _ = await check_object_access(context.bot, uid, city, company, obj)
+        verified = "✅ Подтверждён" if ok else "❌ Не подтверждён"
+    trust = user.get("trust_score", 50)
     text = (
         f"👤 Профиль\n\n"
         f"Город: {user.get('city', '—')}\n"
         f"Компания: {user.get('company', '—')}\n"
-        f"Объект: {user.get('object', '—')}\n\n"
+        f"Объект: {user.get('object', '—')}\n"
+        f"Статус: {verified}\n"
+        f"Доверие: {trust}/100\n\n"
         f"🔄 Вас заменили: {was_replaced} раз\n"
         f"🔍 Вы заменили: {replaced} раз"
     )

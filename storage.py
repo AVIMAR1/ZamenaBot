@@ -28,10 +28,14 @@ from database import (
     get_positions,
     get_all_positions,
     catalog_add_city,
+    catalog_rename_city,
     catalog_remove_city,
     catalog_add_company,
+    catalog_rename_company,
     catalog_add_object,
+    catalog_rename_object,
     catalog_add_position,
+    catalog_rename_position,
     catalog_remove_company,
     catalog_remove_object,
     catalog_remove_position,
@@ -44,6 +48,7 @@ from database import (
     get_reviews_count,
     get_reviews_avg_rating,
     get_review_by_id,
+    delete_review,
     get_review_reaction,
     set_review_reaction,
     get_banned_support_users,
@@ -62,6 +67,12 @@ from database import (
     add_friend,
     remove_friend,
     get_friends,
+    # Offers
+    save_offer,
+    get_offers,
+    get_offer_by_id,
+    deactivate_offer,
+    get_my_offers,
 )
 
 

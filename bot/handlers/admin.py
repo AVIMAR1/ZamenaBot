@@ -28,6 +28,8 @@ from keyboards import (
     admin_reset_users_confirm_kb,
     admin_users_nav_kb,
     admin_users_list_kb,
+    admin_user_profile_kb,
+    admin_userban_cancel_kb,
     admin_users_filter_cities_kb,
     admin_users_filter_companies_kb,
     admin_users_filter_objects_kb,
@@ -42,7 +44,11 @@ from keyboards import (
     shiftreport_nav_kb,
     admin_calendar_kb,
     main_menu_kb,
+    admin_reviews_list_kb,
+    admin_review_detail_kb,
 )
+
+from bot.utils.access import check_object_access
 
 from datetime import date
 
@@ -257,6 +263,87 @@ async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def admin_reviews(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or query.data != "admin:reviews":
+        return
+    if not _is_admin(query.from_user.id if query.from_user else 0):
+        return
+    await query.answer()
+    total = storage.get_reviews_count()
+    reviews = storage.get_reviews(order="recent", limit=1000, offset=0)
+    context.user_data["admin_reviews_page"] = 0
+    await query.edit_message_text(
+        f"Отзывы: {total}",
+        reply_markup=admin_reviews_list_kb(reviews, page=0, total=total, per_page=5),
+    )
+
+
+async def admin_reviews_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("admin:reviewsp:"):
+        return
+    if not _is_admin(query.from_user.id if query.from_user else 0):
+        return
+    await query.answer()
+    try:
+        page = int(query.data.replace("admin:reviewsp:", "", 1))
+    except ValueError:
+        return
+    total = storage.get_reviews_count()
+    reviews = storage.get_reviews(order="recent", limit=1000, offset=0)
+    context.user_data["admin_reviews_page"] = page
+    await query.edit_message_text(
+        f"Отзывы: {total} (стр. {page+1})",
+        reply_markup=admin_reviews_list_kb(reviews, page=page, total=total, per_page=5),
+    )
+
+
+async def admin_review_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("admin:review:"):
+        return
+    if not _is_admin(query.from_user.id if query.from_user else 0):
+        return
+    await query.answer()
+    try:
+        rid = int(query.data.replace("admin:review:", "", 1))
+    except ValueError:
+        return
+    rev = storage.get_review_by_id(rid)
+    if not rev:
+        await query.answer("Отзыв не найден.", show_alert=True)
+        return
+    author = storage.get_user(int(rev.get("user_id") or 0)) or {}
+    author_name = author.get("full_name") or author.get("name") or f"ID {rev.get('user_id')}"
+    author_un = author.get("username") or rev.get("username") or ""
+    contact = f"@{author_un}" if author_un else f"ID {rev.get('user_id')}"
+    text = (
+        "⭐ Отзыв о боте\n\n"
+        f"ID отзыва: {rid}\n"
+        f"Автор: {author_name} ({contact})\n"
+        f"Оценка: {rev.get('rating')}★\n"
+        f"Дата: {rev.get('created_at')}\n\n"
+        f"{rev.get('text') or ''}"
+    )
+    await query.edit_message_text(text, reply_markup=admin_review_detail_kb(rid))
+
+
+async def admin_review_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("admin:reviewdel:"):
+        return
+    if not _is_admin(query.from_user.id if query.from_user else 0):
+        return
+    await query.answer()
+    try:
+        rid = int(query.data.replace("admin:reviewdel:", "", 1))
+    except ValueError:
+        return
+    storage.delete_review(rid)
+    await query.edit_message_text("Отзыв удалён.", reply_markup=admin_main_kb())
+
+
 async def admin_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query or not query.data or not query.data.startswith("admin:usersp:"):
@@ -372,7 +459,182 @@ async def admin_userban_prompt(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.edit_message_text(
         "Введите срок бана для пользователя (в днях) или 'forever'.\n"
         "Пример: 7  или  forever",
+        reply_markup=admin_userban_cancel_kb(),
     )
+
+
+async def admin_userban_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or query.data != "admin:userban_cancel":
+        return
+    if not _is_admin(query.from_user.id if query.from_user else 0):
+        return
+    await query.answer()
+    context.user_data.pop("admin_userban_target", None)
+    users_page, total = storage.get_users_page(page=0, per_page=10)
+    await query.edit_message_text(
+        f"Отменено.\nПользователей: {total}\nНажмите, чтобы забанить/разбанить:",
+        reply_markup=admin_users_list_kb(users_page, 0, total, per_page=10),
+    )
+
+
+async def admin_userprofile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("admin:userprofile:"):
+        return
+    if not _is_admin(query.from_user.id if query.from_user else 0):
+        return
+    await query.answer()
+    try:
+        target_id = int(query.data.replace("admin:userprofile:", "", 1))
+    except ValueError:
+        return
+    u = storage.get_user(target_id) or {"telegram_id": target_id}
+    city, company, obj = u.get("city"), u.get("company"), u.get("object")
+    verified = "—"
+    if city and company and obj:
+        ok, _ = await check_object_access(context.bot, target_id, city, company, obj)
+        verified = "✅ Подтверждён" if ok else "❌ Не подтверждён"
+    sup = storage.get_supervisor_by_id(u.get("supervisor_id") or 0) or {}
+    admin_name = sup.get("title") or "—"
+    trust = u.get("trust_score", 50)
+    uname = u.get("username") or ""
+    username_line = f"@username: @{uname}" if uname else "@username: —"
+    text = (
+        "👤 Пользователь\n\n"
+        f"ID: {target_id}\n"
+        f"ФИО: {u.get('full_name') or '—'}\n"
+        f"{username_line}"
+    )
+    text += (
+        f"\nГород: {city or '—'}\n"
+        f"Компания: {company or '—'}\n"
+        f"Объект: {obj or '—'}\n"
+        f"Администратор: {admin_name}\n"
+        f"Статус: {verified}\n"
+        f"Доверие: {trust}/100\n"
+        f"Бан: {u.get('banned_until') or '—'}"
+    )
+    await query.edit_message_text(text, reply_markup=admin_user_profile_kb(target_id))
+
+
+async def admin_warn_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("admin:warn:"):
+        return
+    if not _is_admin(query.from_user.id if query.from_user else 0):
+        return
+    await query.answer()
+    target_id = int(query.data.replace("admin:warn:", "", 1))
+    context.user_data["admin_warn_target"] = target_id
+    await query.edit_message_text("Введите текст предупреждения пользователю (одним сообщением):")
+
+
+async def admin_msg_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("admin:msg:"):
+        return
+    if not _is_admin(query.from_user.id if query.from_user else 0):
+        return
+    await query.answer()
+    target_id = int(query.data.replace("admin:msg:", "", 1))
+    context.user_data["admin_msg_target"] = target_id
+    await query.edit_message_text("Введите сообщение пользователю (одним сообщением):")
+
+
+async def admin_warn_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    target_id = context.user_data.pop("admin_warn_target", None)
+    if not target_id:
+        return
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return
+    text = (update.message.text or "").strip()
+    if not text:
+        await update.message.reply_text("Пустое предупреждение. Отмена.", reply_markup=admin_main_kb())
+        return
+    try:
+        await context.bot.send_message(chat_id=int(target_id), text=f"⚠ Предупреждение от администратора:\n\n{text}")
+    except Exception:
+        pass
+    await update.message.reply_text("Отправлено.", reply_markup=admin_main_kb())
+
+
+async def admin_msg_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    target_id = context.user_data.pop("admin_msg_target", None)
+    if not target_id:
+        return
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return
+    text = (update.message.text or "").strip()
+    if not text:
+        await update.message.reply_text("Пустое сообщение. Отмена.", reply_markup=admin_main_kb())
+        return
+    try:
+        await context.bot.send_message(chat_id=int(target_id), text=text)
+    except Exception:
+        pass
+    await update.message.reply_text("Отправлено.", reply_markup=admin_main_kb())
+
+
+async def admin_trust_set_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    target_id = context.user_data.pop("admin_trust_set_target", None)
+    if not target_id:
+        return
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return
+    raw = (update.message.text or "").strip().replace(",", ".")
+    try:
+        val = float(raw)
+    except Exception:
+        await update.message.reply_text("Нужно число 0..100.", reply_markup=admin_main_kb())
+        return
+    val = max(0.0, min(100.0, val))
+    u = storage.get_user(int(target_id)) or {"telegram_id": int(target_id)}
+    u["trust_score"] = val
+    storage.save_user(int(target_id), u)
+    await update.message.reply_text(f"Доверие обновлено: {val}/100.", reply_markup=admin_main_kb())
+
+
+async def admin_trust_adjust(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("admin:trust:"):
+        return
+    if not _is_admin(query.from_user.id if query.from_user else 0):
+        return
+    await query.answer()
+    parts = query.data.split(":")
+    # admin:trust:+5:uid | admin:trust:set:uid
+    if len(parts) < 4:
+        return
+    action = parts[2]
+    target_id = int(parts[3])
+    u = storage.get_user(target_id) or {"telegram_id": target_id}
+    if action == "set":
+        context.user_data["admin_trust_set_target"] = target_id
+        await query.edit_message_text("Введите новое значение доверия (0..100):")
+        return
+    try:
+        delta = float(action)
+    except Exception:
+        return
+    trust = float(u.get("trust_score", 50) or 50)
+    trust = max(0.0, min(100.0, trust + delta))
+    u["trust_score"] = trust
+    storage.save_user(target_id, u)
+    await query.answer("Обновлено")
+    # вернём в профиль
+    fake = update
+    fake.callback_query.data = f"admin:userprofile:{target_id}"
+    await admin_userprofile(fake, context)
 
 
 async def admin_userban_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -830,10 +1092,16 @@ async def shiftrep_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         taker_sup = storage.get_supervisor_by_id(taker.get("supervisor_id") or 0) or {}
         subject_sup_name = subject_sup.get("title") or "—"
         taker_sup_name = taker_sup.get("title") or "—"
+        pay = ""
+        if r.get("pay_enabled"):
+            pay = f"\n  💰 Доплата: {r.get('pay_amount_byn') or '—'} BYN"
+        taker_link = taker_contact if taker_contact.startswith("@") else f"tg://user?id={taker_id}"
+        subject_link = subject_contact if subject_contact.startswith("@") else f"tg://user?id={subject_id}"
         rows.append(
             f"- {taker_name} ({taker_contact}, куратор: {taker_sup_name})\n"
             f"  → {subject_name} ({subject_contact}, куратор: {subject_sup_name})\n"
-            f"  Позиция: {r.get('position')}"
+            f"  Позиция: {r.get('position')}{pay}\n"
+            f"  Ссылки: {taker_link} → {subject_link}"
         )
     header = f"📊 Отчёт\nОбъект: {obj}\nСмена: {'Дневная' if shift_key=='day' else 'Ночная'}\nДата: {d_iso}\n\n"
     # Пагинация
@@ -1325,6 +1593,98 @@ async def catalog_add_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["admin_cat_add"] = ":".join(parts[2:])  # companies:0  or  objects:0:0  or  positions:0:0:0
     labels = {"companies": "компанию", "objects": "объект", "positions": "позицию"}
     await query.edit_message_text(f"Введите название {labels.get(kind, kind)}:")
+
+
+async def catalog_rename_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("cat:ren:"):
+        return
+    uid = query.from_user.id if query.from_user else 0
+    if not _is_admin(uid):
+        return
+    await _answer_first(query)
+    # cat:ren:city:0 | cat:ren:company:0:idx | cat:ren:object:0:comp:idx | cat:ren:pos:0:comp:obj:idx
+    parts = query.data.split(":")
+    if len(parts) < 4:
+        return
+    kind = parts[2]
+    context.user_data["admin_cat_rename"] = query.data
+    labels = {"city": "города", "company": "компании", "object": "объекта", "pos": "позиции"}
+    await query.edit_message_text(f"Введите новое название для {labels.get(kind, kind)}:")
+
+
+async def catalog_rename_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+    state = context.user_data.get("admin_cat_rename")
+    if not state:
+        return
+    context.user_data.pop("admin_cat_rename", None)
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return
+    new_name = (update.message.text or "").strip()
+    if not new_name:
+        await update.message.reply_text("Пусто. Отмена.", reply_markup=admin_main_kb())
+        return
+    parts = state.split(":")
+    kind = parts[2]
+    cities = storage.get_cities()
+    try:
+        city_idx = int(parts[3])
+    except Exception:
+        await update.message.reply_text("Ошибка.", reply_markup=admin_main_kb())
+        return
+    if city_idx < 0 or city_idx >= len(cities):
+        await update.message.reply_text("Город не найден.", reply_markup=admin_main_kb())
+        return
+    city = cities[city_idx]
+
+    ok = False
+    if kind == "city":
+        ok = storage.catalog_rename_city(city, new_name)
+    elif kind == "company":
+        companies = storage.get_companies(city)
+        company_idx = int(parts[4]) if len(parts) > 4 else -1
+        if not (0 <= company_idx < len(companies)):
+            await update.message.reply_text("Компания не найдена.", reply_markup=admin_main_kb())
+            return
+        ok = storage.catalog_rename_company(city, companies[company_idx], new_name)
+    elif kind == "object":
+        companies = storage.get_companies(city)
+        company_idx = int(parts[4]) if len(parts) > 4 else -1
+        obj_idx = int(parts[5]) if len(parts) > 5 else -1
+        if not (0 <= company_idx < len(companies)):
+            await update.message.reply_text("Компания не найдена.", reply_markup=admin_main_kb())
+            return
+        company = companies[company_idx]
+        objects = storage.get_objects(city, company)
+        if not (0 <= obj_idx < len(objects)):
+            await update.message.reply_text("Объект не найден.", reply_markup=admin_main_kb())
+            return
+        ok = storage.catalog_rename_object(city, company, objects[obj_idx], new_name)
+    elif kind == "pos":
+        companies = storage.get_companies(city)
+        company_idx = int(parts[4]) if len(parts) > 4 else -1
+        obj_idx = int(parts[5]) if len(parts) > 5 else -1
+        pos_idx = int(parts[6]) if len(parts) > 6 else -1
+        if not (0 <= company_idx < len(companies)):
+            await update.message.reply_text("Компания не найдена.", reply_markup=admin_main_kb())
+            return
+        company = companies[company_idx]
+        objects = storage.get_objects(city, company)
+        if not (0 <= obj_idx < len(objects)):
+            await update.message.reply_text("Объект не найден.", reply_markup=admin_main_kb())
+            return
+        obj = objects[obj_idx]
+        positions = storage.get_positions(city, company, obj)
+        if not (0 <= pos_idx < len(positions)):
+            await update.message.reply_text("Позиция не найдена.", reply_markup=admin_main_kb())
+            return
+        ok = storage.catalog_rename_position(city, company, obj, positions[pos_idx], new_name)
+
+    msg = "Переименовано." if ok else "Не удалось переименовать (возможно, такое название уже существует)."
+    await update.message.reply_text(msg, reply_markup=admin_main_kb())
 
 
 async def catalog_add_text(update: Update, context: ContextTypes.DEFAULT_TYPE):

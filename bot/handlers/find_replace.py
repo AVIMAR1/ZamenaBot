@@ -2,6 +2,7 @@
 """Сценарий «Найти замену»: смена, кем заменить, календарь, публикация."""
 
 import uuid
+import json
 from datetime import date, datetime, timedelta, time
 from zoneinfo import ZoneInfo
 
@@ -16,7 +17,9 @@ from keyboards import (
     positions_kb,
     calendar_month_kb,
     confirm_create_kb,
+    replacement_pay_kb,
     main_menu_kb,
+    menu_quick_kb,
     friend_confirm_kb,
     friends_choose_kb,
 )
@@ -78,6 +81,8 @@ async def _publish_from_pending(query, context: ContextTypes.DEFAULT_TYPE, rid: 
         "active": True,
         "confirmed": False,
         "taken_by_id": None,
+        "pay_enabled": bool(pending.get("pay_enabled")),
+        "pay_amount_byn": pending.get("pay_amount_byn"),
     }
     storage.save_replacement(replacement)
     # Синхронизируем username из users (на случай смены @username)
@@ -87,9 +92,89 @@ async def _publish_from_pending(query, context: ContextTypes.DEFAULT_TYPE, rid: 
         await notify_new_replacement(context.bot, replacement)
     except Exception:
         pass
+    # Матчинг с offers: есть ли готовые выйти на замену под это объявление
+    try:
+        all_offers = storage.get_offers(active_only=True)
+        matches = []
+        for o in all_offers:
+            if o.get("city") != replacement.get("city") or o.get("company") != replacement.get("company") or o.get("object") != replacement.get("object"):
+                continue
+            if o.get("shift_key") != replacement.get("shift_key"):
+                continue
+            if o.get("date_from") != replacement.get("date_from"):
+                continue
+            try:
+                pos = json.loads(o.get("positions_json") or "[]")
+                if not isinstance(pos, list):
+                    pos = []
+            except Exception:
+                pos = []
+            if replacement.get("position") in pos:
+                matches.append(o)
+        if matches:
+            # готовым выйти — отправляем кнопку \"подать заявку\" (через take-flow)
+            from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+
+            rows = []
+            for o in matches[:10]:
+                uid = o.get("author_id")
+                author = storage.get_user(int(uid)) or {}
+                name = author.get("full_name") or author.get("name") or f\"ID {uid}\"
+                rows.append([InlineKeyboardButton(f\"{name} — подать заявку\", callback_data=f\"take:{rid}\")])
+            rows.append([InlineKeyboardButton(\"🏠 Меню\", callback_data=\"back:main\")])
+            for o in matches[:10]:
+                try:
+                    await context.bot.send_message(
+                        chat_id=o.get(\"author_id\"),
+                        text=\"🔔 Нашлось объявление, которое подходит под ваше предложение выйти на замену. Нажмите, чтобы подать заявку:\",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(\"Подать заявку\", callback_data=f\"take:{rid}\")]]),
+                    )
+                except Exception:
+                    pass
+            # автору объявления — информируем
+            try:
+                await context.bot.send_message(
+                    chat_id=replacement.get(\"author_id\"),
+                    text=\"🔔 Нашёлся человек, готовый выйти на замену по вашему объявлению. Ожидайте заявку в боте.\",
+                    reply_markup=menu_quick_kb(),
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
     context.user_data.pop("pending_replacement", None)
     await query.edit_message_text("Объявление опубликовано.")
     await query.message.reply_text("Главное меню:", reply_markup=main_menu_kb())
+
+
+async def replacement_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("reppay:"):
+        return
+    await query.answer()
+    parts = query.data.split(":")
+    action = parts[1]
+    rid = parts[2] if len(parts) > 2 else ""
+    pending = context.user_data.get("pending_replacement")
+    if not pending or pending.get("id") != rid:
+        await query.edit_message_text("Сессия истекла.", reply_markup=main_menu_kb())
+        return
+    if action == "toggle":
+        pending["pay_enabled"] = not bool(pending.get("pay_enabled"))
+        context.user_data["pending_replacement"] = pending
+        await query.edit_message_text(
+            "Доплата за замену (будет показана обеим сторонам). Будьте осторожны:",
+            reply_markup=replacement_pay_kb(rid, bool(pending.get("pay_enabled")), pending.get("pay_amount_byn")),
+        )
+        return
+    if action == "set":
+        context.user_data["replacement_pay_amount_waiting"] = rid
+        await query.edit_message_text("Введите сумму доплаты в BYN (например: 10 или 10.5):")
+        return
+    if action == "back":
+        # вернёмся к подтверждению
+        is_edit = bool(storage.get_replacement_by_id(rid))
+        await query.edit_message_text("Проверьте данные и подтвердите:", reply_markup=confirm_create_kb(rid, is_edit=is_edit))
 
 
 async def act_find(update: Update, context: ContextTypes.DEFAULT_TYPE):

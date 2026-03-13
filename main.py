@@ -23,6 +23,7 @@ from bot.handlers import start as start_handlers
 from bot.handlers import menu as menu_handlers
 from bot.handlers import find_replace as find_handlers
 from bot.handlers import replace as replace_handlers
+from bot.handlers import offers as offers_handlers
 from bot.handlers import support as support_handlers
 from bot.handlers import admin as admin_handlers
 from bot.handlers import reviews as reviews_handlers
@@ -44,6 +45,12 @@ def _is_user_banned(user: dict) -> bool:
     until = user.get("banned_until")
     if not until:
         return False
+
+
+def _is_user_registered(user: dict | None) -> bool:
+    if not user:
+        return False
+    return bool(user.get("city") and user.get("company") and user.get("object") and user.get("full_name") and user.get("supervisor_id"))
     if until == "forever":
         return True
     try:
@@ -67,6 +74,9 @@ async def noop_callback(update: Update, context):
                 if _is_user_banned(user):
                     await query.answer("Доступ к боту заблокирован.", show_alert=True)
                     return
+                if query.data != "noop" and not _is_user_registered(user):
+                    await query.answer("Сначала пройдите регистрацию (/start).", show_alert=True)
+                    return
         except Exception:
             pass
         await query.answer()
@@ -84,6 +94,16 @@ async def message_dispatch(update: Update, context):
             storage.save_user(u.id, user)
             if _is_user_banned(user):
                 # Забаненным ничего не отвечаем.
+                return
+    except Exception:
+        pass
+    # До регистрации запрещаем любые текстовые команды/сообщения, кроме flow /start (кнопки города/компании/объекта идут callback'ами).
+    try:
+        u = update.effective_user
+        if u:
+            user = storage.get_user(u.id) or {}
+            txt = (update.message.text or "") if update.message else ""
+            if txt.startswith("/") and not txt.startswith("/start") and not _is_user_registered(user):
                 return
     except Exception:
         pass
@@ -111,6 +131,15 @@ async def message_dispatch(update: Update, context):
     if context.user_data.get("admin_userban_target"):
         await admin_handlers.admin_userban_text(update, context)
         return
+    if context.user_data.get("admin_warn_target"):
+        await admin_handlers.admin_warn_text(update, context)
+        return
+    if context.user_data.get("admin_msg_target"):
+        await admin_handlers.admin_msg_text(update, context)
+        return
+    if context.user_data.get("admin_trust_set_target"):
+        await admin_handlers.admin_trust_set_text(update, context)
+        return
     if context.user_data.get("admin_supervisor_add_waiting"):
         await admin_handlers.admin_supervisor_add_text(update, context)
         return
@@ -129,11 +158,49 @@ async def message_dispatch(update: Update, context):
     if context.user_data.get("admin_cat_add"):
         await admin_handlers.catalog_add_text(update, context)
         return
+    if context.user_data.get("admin_cat_rename"):
+        await admin_handlers.catalog_rename_text(update, context)
+        return
+    if context.user_data.get("replacement_pay_amount_waiting"):
+        rid = context.user_data.pop("replacement_pay_amount_waiting", None)
+        pending = context.user_data.get("pending_replacement") or {}
+        if rid and pending.get("id") == rid and update.message:
+            raw = (update.message.text or "").strip().replace(",", ".")
+            try:
+                amt = float(raw)
+            except Exception:
+                amt = None
+            if amt is not None and amt > 0:
+                pending["pay_amount_byn"] = amt
+                pending["pay_enabled"] = True
+                context.user_data["pending_replacement"] = pending
+                await update.message.reply_text("Сумма сохранена. Вернитесь к подтверждению.", reply_markup=menu_quick_kb())
+        return
+    if context.user_data.get("offer_pay_amount_waiting"):
+        oid = context.user_data.pop("offer_pay_amount_waiting", None)
+        pending = context.user_data.get("pending_offer") or {}
+        if oid and pending.get("id") == oid and update.message:
+            raw = (update.message.text or "").strip().replace(",", ".")
+            try:
+                amt = float(raw)
+            except Exception:
+                amt = None
+            if amt is not None and amt > 0:
+                pending["pay_amount_byn"] = amt
+                pending["pay_enabled"] = True
+                context.user_data["pending_offer"] = pending
+                await update.message.reply_text("Сумма сохранена. Вернитесь к подтверждению.", reply_markup=menu_quick_kb())
+        return
 
 
 async def cmd_menu(update: Update, context):
     """Команда /menu — показать главное меню."""
     if not update.message:
+        return
+    uid = update.effective_user.id if update.effective_user else 0
+    user = storage.get_user(uid) if uid else None
+    if not _is_user_registered(user):
+        await update.message.reply_text("Сначала пройдите регистрацию через /start.")
         return
     text = (
         "Главное меню. Доступные команды:\n"
@@ -146,6 +213,11 @@ async def cmd_menu(update: Update, context):
 async def cmd_help(update: Update, context):
     """Команда /help — краткая справка."""
     if not update.message:
+        return
+    uid = update.effective_user.id if update.effective_user else 0
+    user = storage.get_user(uid) if uid else None
+    if not _is_user_registered(user):
+        await update.message.reply_text("Сначала пройдите регистрацию через /start.")
         return
     text = (
         "Команды:\n"
@@ -207,12 +279,21 @@ async def digest_job(context):
             f"Сейчас в списке {count} замен(ы) по вашему объекту.\n"
             f"Перейти к списку?"
         )
+        # Удаляем предыдущий дайджест, чтобы не засорять чат.
         try:
-            await context.bot.send_message(
+            last_id = user.get("last_digest_msg_id")
+            if last_id:
+                await context.bot.delete_message(chat_id=uid, message_id=int(last_id))
+        except Exception:
+            pass
+        try:
+            m = await context.bot.send_message(
                 chat_id=uid,
                 text=text,
                 reply_markup=digest_notify_kb(),
             )
+            user["last_digest_msg_id"] = getattr(m, "message_id", None)
+            storage.save_user(uid, user)
             sent += 1
         except Exception:
             failed += 1
@@ -270,6 +351,13 @@ async def shifts_start_job(context):
                 storage.save_user(author_id, author)
                 taker = storage.get_user(taker_id) or {}
                 taker["replaced_count"] = taker.get("replaced_count", 0) + 1
+                # Доверие: повышаем тем, кто реально выходит на замену.
+                try:
+                    trust = float(taker.get("trust_score", 50) or 50)
+                    trust = max(0.0, min(100.0, trust + 2.5))
+                    taker["trust_score"] = trust
+                except Exception:
+                    pass
                 storage.save_user(taker_id, taker)
                 try:
                     await context.bot.send_message(
@@ -391,6 +479,7 @@ def main():
     app.add_handler(CallbackQueryHandler(find_handlers.callback_position, pattern="^pos:"))
     app.add_handler(CallbackQueryHandler(find_handlers.callback_calendar_nav, pattern="^cal:"))
     app.add_handler(CallbackQueryHandler(find_handlers.callback_date, pattern="^date:"))
+    app.add_handler(CallbackQueryHandler(find_handlers.replacement_pay, pattern="^reppay:"))
     app.add_handler(CallbackQueryHandler(find_handlers.callback_publish, pattern="^publish:"))
     app.add_handler(CallbackQueryHandler(find_handlers.friend_confirm, pattern="^friend:(yes|no):"))
     app.add_handler(CallbackQueryHandler(find_handlers.friends_choose, pattern="^friends:choose:"))
@@ -398,7 +487,20 @@ def main():
     app.add_handler(CallbackQueryHandler(find_handlers.callback_update, pattern="^update:"))
 
     app.add_handler(CallbackQueryHandler(replace_handlers.act_replace, pattern="^act:replace$"))
+    app.add_handler(CallbackQueryHandler(replace_handlers.replace_list_open, pattern="^replace:list$"))
     app.add_handler(CallbackQueryHandler(replace_handlers.replace_list_page, pattern="^replist:"))
+    app.add_handler(CallbackQueryHandler(offers_handlers.offers_menu, pattern="^offers:menu$"))
+    app.add_handler(CallbackQueryHandler(offers_handlers.offers_list, pattern="^offers:list$"))
+    app.add_handler(CallbackQueryHandler(offers_handlers.offers_page, pattern="^offersp:"))
+    app.add_handler(CallbackQueryHandler(offers_handlers.my_offers, pattern="^offers:mine$"))
+    app.add_handler(CallbackQueryHandler(offers_handlers.offer_deactivate, pattern="^offer:off:"))
+    app.add_handler(CallbackQueryHandler(offers_handlers.offer_create_start, pattern="^offers:create$"))
+    app.add_handler(CallbackQueryHandler(offers_handlers.offer_shift, pattern="^offer:shift:"))
+    app.add_handler(CallbackQueryHandler(offers_handlers.offer_date, pattern="^offerdate:"))
+    app.add_handler(CallbackQueryHandler(offers_handlers.offer_cal_nav, pattern="^offercal:"))
+    app.add_handler(CallbackQueryHandler(offers_handlers.offer_pos_toggle, pattern="^offerpos:"))
+    app.add_handler(CallbackQueryHandler(offers_handlers.offer_pay, pattern="^offerpay:"))
+    app.add_handler(CallbackQueryHandler(offers_handlers.offer_publish, pattern="^offerpub:"))
     app.add_handler(CallbackQueryHandler(replace_handlers.take_replacement, pattern="^take:"))
     app.add_handler(CallbackQueryHandler(replace_handlers.confirm_take, pattern="^confirm_take:"))
     app.add_handler(CallbackQueryHandler(replace_handlers.creator_accept, pattern="^creator_accept:"))
@@ -438,6 +540,10 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_handlers.objacc_delchat, pattern="^objacc:delchat:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_digest_now, pattern="^admin:digestnow$"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_shiftreport, pattern="^admin:shiftreport$"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_reviews, pattern="^admin:reviews$"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_reviews_page, pattern="^admin:reviewsp:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_review_detail, pattern="^admin:review:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_review_delete, pattern="^admin:reviewdel:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.shiftrep_city, pattern="^shiftrep:city:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.shiftrep_company, pattern="^shiftrep:company:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.shiftrep_object, pattern="^shiftrep:object:"))
@@ -464,7 +570,12 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_handlers.usersobj_set, pattern="^usersobj:set:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.usersobj_reset, pattern="^usersobj:reset$"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_userban_prompt, pattern="^admin:userban:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_userban_cancel, pattern="^admin:userban_cancel$"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_userunban, pattern="^admin:userunban:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_userprofile, pattern="^admin:userprofile:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_warn_prompt, pattern="^admin:warn:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_msg_prompt, pattern="^admin:msg:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_trust_adjust, pattern="^admin:trust:"))
 
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_catalog, pattern="^admin:catalog$"))
     app.add_handler(CallbackQueryHandler(admin_handlers.catalog_city_menu, pattern="^cat:city:"))
@@ -472,6 +583,7 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_handlers.catalog_pos_select, pattern="^cat:posselect:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.catalog_show_list, pattern="^cat:(companies|objectlist|posobj|positionlist):"))
     app.add_handler(CallbackQueryHandler(admin_handlers.catalog_add_prompt, pattern="^cat:add:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.catalog_rename_prompt, pattern="^cat:ren:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.catalog_del_item, pattern="^cat:del:(companies|objects|positions):"))
     app.add_handler(CallbackQueryHandler(admin_handlers.catalog_add_city_prompt, pattern="^cat:addcity$"))
     app.add_handler(CallbackQueryHandler(admin_handlers.catalog_del_city, pattern="^cat:delcity:"))

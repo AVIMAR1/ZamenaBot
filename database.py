@@ -41,7 +41,11 @@ def _init_db():
             notify_shift_keys TEXT,
             banned_until TEXT,
             support_ban_until TEXT,
-            support_ban_reason TEXT
+            support_ban_reason TEXT,
+            trust_score REAL DEFAULT 50,
+            daily_refuse_count INTEGER DEFAULT 0,
+            daily_refuse_date TEXT,
+            last_digest_msg_id INTEGER
         );
         CREATE TABLE IF NOT EXISTS replacements (
             id TEXT PRIMARY KEY,
@@ -52,7 +56,9 @@ def _init_db():
             active INTEGER DEFAULT 1, confirmed INTEGER DEFAULT 0,
             taken_by_id INTEGER, taken_by_username TEXT,
             requested_by_id INTEGER, requested_by_username TEXT,
-            start_notified INTEGER DEFAULT 0
+            start_notified INTEGER DEFAULT 0,
+            pay_enabled INTEGER DEFAULT 0,
+            pay_amount_byn REAL
         );
         CREATE TABLE IF NOT EXISTS tickets (
             id TEXT PRIMARY KEY,
@@ -146,6 +152,14 @@ def _migrate_schema(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE users ADD COLUMN support_ban_until TEXT")
     if "support_ban_reason" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN support_ban_reason TEXT")
+    if "trust_score" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN trust_score REAL DEFAULT 50")
+    if "daily_refuse_count" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN daily_refuse_count INTEGER DEFAULT 0")
+    if "daily_refuse_date" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN daily_refuse_date TEXT")
+    if "last_digest_msg_id" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN last_digest_msg_id INTEGER")
 
     # Replacements
     cur = conn.execute("PRAGMA table_info(replacements)")
@@ -158,6 +172,10 @@ def _migrate_schema(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE replacements ADD COLUMN for_friend_username TEXT")
     if "for_friend_full_name" not in rcols:
         conn.execute("ALTER TABLE replacements ADD COLUMN for_friend_full_name TEXT")
+    if "pay_enabled" not in rcols:
+        conn.execute("ALTER TABLE replacements ADD COLUMN pay_enabled INTEGER DEFAULT 0")
+    if "pay_amount_byn" not in rcols:
+        conn.execute("ALTER TABLE replacements ADD COLUMN pay_amount_byn REAL")
 
     # Object shifts table
     conn.execute("""
@@ -230,6 +248,27 @@ def _migrate_schema(conn: sqlite3.Connection):
             owner_id INTEGER,
             friend_id INTEGER,
             PRIMARY KEY (owner_id, friend_id)
+        )
+    """)
+
+    # Offers: "готов выйти на замену"
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS offers (
+            id TEXT PRIMARY KEY,
+            author_id INTEGER,
+            author_username TEXT,
+            city TEXT,
+            company TEXT,
+            object TEXT,
+            positions_json TEXT,
+            shift_key TEXT,
+            date_from TEXT,
+            date_to TEXT,
+            date_text TEXT,
+            pay_enabled INTEGER DEFAULT 0,
+            pay_amount_byn REAL,
+            active INTEGER DEFAULT 1,
+            created_at TEXT
         )
     """)
     conn.commit()
@@ -310,8 +349,9 @@ def save_user(telegram_id: int, user: dict):
                 replaced_count, was_replaced_count,
                 notify_digest, notify_new_enabled, notify_positions, notify_shift_keys,
                 banned_until,
-                support_ban_until, support_ban_reason)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                support_ban_until, support_ban_reason,
+                trust_score, daily_refuse_count, daily_refuse_date, last_digest_msg_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 telegram_id,
                 user.get("city"),
@@ -330,6 +370,10 @@ def save_user(telegram_id: int, user: dict):
                 user.get("banned_until"),
                 user.get("support_ban_until"),
                 user.get("support_ban_reason"),
+                user.get("trust_score", 50),
+                user.get("daily_refuse_count", 0),
+                user.get("daily_refuse_date"),
+                user.get("last_digest_msg_id"),
             )
         )
         _get_conn().commit()
@@ -557,8 +601,9 @@ def save_replacement(replacement: dict):
                 active, confirmed,
                 taken_by_id, taken_by_username,
                 requested_by_id, requested_by_username,
-                start_notified)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                start_notified,
+                pay_enabled, pay_amount_byn)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (r.get("id"), r.get("author_id"), r.get("author_username", ""),
              r.get("for_friend_id"), r.get("for_friend_username", ""), r.get("for_friend_full_name", ""),
              r.get("city"), r.get("company"), r.get("object"), r.get("position"),
@@ -566,7 +611,9 @@ def save_replacement(replacement: dict):
              1 if r.get("active", True) else 0, 1 if r.get("confirmed") else 0,
              r.get("taken_by_id"), r.get("taken_by_username", ""),
              r.get("requested_by_id"), r.get("requested_by_username", ""),
-             1 if r.get("start_notified", 0) else 0)
+             1 if r.get("start_notified", 0) else 0,
+             1 if r.get("pay_enabled", 0) else 0,
+             r.get("pay_amount_byn"))
         )
         _get_conn().commit()
 
@@ -831,6 +878,13 @@ def get_review_by_id(rid: int) -> Optional[dict]:
     return d
 
 
+def delete_review(rid: int):
+    with _lock:
+        _get_conn().execute("DELETE FROM review_reactions WHERE review_id=?", (rid,))
+        _get_conn().execute("DELETE FROM reviews WHERE id=?", (rid,))
+        _get_conn().commit()
+
+
 def _count_reactions(review_id: int) -> tuple[int, int]:
     with _lock:
         cur = _get_conn().execute(
@@ -930,10 +984,54 @@ def catalog_remove_city(city: str):
         _get_conn().commit()
 
 
+def catalog_rename_city(old: str, new: str) -> bool:
+    old, new = old.strip(), new.strip()
+    if not old or not new or old == new:
+        return False
+    with _lock:
+        try:
+            _get_conn().execute("UPDATE catalog_cities SET name=? WHERE name=?", (new, old))
+            _get_conn().execute("UPDATE catalog_companies SET city=? WHERE city=?", (new, old))
+            _get_conn().execute("UPDATE catalog_objects SET city=? WHERE city=?", (new, old))
+            _get_conn().execute("UPDATE catalog_positions SET city=? WHERE city=?", (new, old))
+            _get_conn().execute("UPDATE object_shifts SET city=? WHERE city=?", (new, old))
+            _get_conn().execute("UPDATE object_access SET city=? WHERE city=?", (new, old))
+            _get_conn().execute("UPDATE object_access_chats SET city=? WHERE city=?", (new, old))
+            _get_conn().execute("UPDATE users SET city=? WHERE city=?", (new, old))
+            _get_conn().execute("UPDATE replacements SET city=? WHERE city=?", (new, old))
+            _get_conn().commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
 def catalog_add_company(city: str, name: str):
     with _lock:
         _get_conn().execute("INSERT OR IGNORE INTO catalog_companies VALUES (?,?)", (city, name.strip()))
         _get_conn().commit()
+
+
+def catalog_rename_company(city: str, old: str, new: str) -> bool:
+    old, new = old.strip(), new.strip()
+    if not old or not new or old == new:
+        return False
+    with _lock:
+        try:
+            _get_conn().execute(
+                "UPDATE catalog_companies SET name=? WHERE city=? AND name=?",
+                (new, city, old),
+            )
+            _get_conn().execute("UPDATE catalog_objects SET company=? WHERE city=? AND company=?", (new, city, old))
+            _get_conn().execute("UPDATE catalog_positions SET company=? WHERE city=? AND company=?", (new, city, old))
+            _get_conn().execute("UPDATE object_shifts SET company=? WHERE city=? AND company=?", (new, city, old))
+            _get_conn().execute("UPDATE object_access SET company=? WHERE city=? AND company=?", (new, city, old))
+            _get_conn().execute("UPDATE object_access_chats SET company=? WHERE city=? AND company=?", (new, city, old))
+            _get_conn().execute("UPDATE users SET company=? WHERE city=? AND company=?", (new, city, old))
+            _get_conn().execute("UPDATE replacements SET company=? WHERE city=? AND company=?", (new, city, old))
+            _get_conn().commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
 
 
 def catalog_add_object(city: str, company: str, name: str):
@@ -942,11 +1040,157 @@ def catalog_add_object(city: str, company: str, name: str):
         _get_conn().commit()
 
 
+def catalog_rename_object(city: str, company: str, old: str, new: str) -> bool:
+    old, new = old.strip(), new.strip()
+    if not old or not new or old == new:
+        return False
+    with _lock:
+        try:
+            _get_conn().execute(
+                "UPDATE catalog_objects SET name=? WHERE city=? AND company=? AND name=?",
+                (new, city, company, old),
+            )
+            _get_conn().execute(
+                "UPDATE catalog_positions SET object_name=? WHERE city=? AND company=? AND object_name=?",
+                (new, city, company, old),
+            )
+            _get_conn().execute(
+                "UPDATE object_shifts SET object_name=? WHERE city=? AND company=? AND object_name=?",
+                (new, city, company, old),
+            )
+            _get_conn().execute(
+                "UPDATE object_access SET object_name=? WHERE city=? AND company=? AND object_name=?",
+                (new, city, company, old),
+            )
+            _get_conn().execute(
+                "UPDATE object_access_chats SET object_name=? WHERE city=? AND company=? AND object_name=?",
+                (new, city, company, old),
+            )
+            _get_conn().execute(
+                "UPDATE users SET object=? WHERE city=? AND company=? AND object=?",
+                (new, city, company, old),
+            )
+            _get_conn().execute(
+                "UPDATE replacements SET object=? WHERE city=? AND company=? AND object=?",
+                (new, city, company, old),
+            )
+            _get_conn().commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
 def catalog_add_position(city: str, company: str, object_name: str, name: str):
     with _lock:
         _get_conn().execute("INSERT OR IGNORE INTO catalog_positions VALUES (?,?,?,?)",
                             (city, company, object_name, name.strip()))
         _get_conn().commit()
+
+
+def catalog_rename_position(city: str, company: str, object_name: str, old: str, new: str) -> bool:
+    old, new = old.strip(), new.strip()
+    if not old or not new or old == new:
+        return False
+    with _lock:
+        try:
+            _get_conn().execute(
+                "UPDATE catalog_positions SET name=? WHERE city=? AND company=? AND object_name=? AND name=?",
+                (new, city, company, object_name, old),
+            )
+            _get_conn().execute(
+                "UPDATE replacements SET position=? WHERE city=? AND company=? AND object=? AND position=?",
+                (new, city, company, object_name, old),
+            )
+            _get_conn().commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
+# --- Offers (готов выйти на замену) ---
+def save_offer(offer: dict):
+    with _lock:
+        _get_conn().execute(
+            """INSERT OR REPLACE INTO offers
+               (id, author_id, author_username, city, company, object,
+                positions_json, shift_key, date_from, date_to, date_text,
+                pay_enabled, pay_amount_byn, active, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                offer.get("id"),
+                offer.get("author_id"),
+                offer.get("author_username", ""),
+                offer.get("city"),
+                offer.get("company"),
+                offer.get("object"),
+                offer.get("positions_json") or "[]",
+                offer.get("shift_key"),
+                offer.get("date_from"),
+                offer.get("date_to"),
+                offer.get("date_text"),
+                1 if offer.get("pay_enabled") else 0,
+                offer.get("pay_amount_byn"),
+                1 if offer.get("active", True) else 0,
+                offer.get("created_at"),
+            ),
+        )
+        _get_conn().commit()
+
+
+def get_offers(active_only: bool = True) -> list:
+    with _lock:
+        if active_only:
+            cur = _get_conn().execute("SELECT * FROM offers WHERE active=1 ORDER BY created_at DESC")
+        else:
+            cur = _get_conn().execute("SELECT * FROM offers ORDER BY created_at DESC")
+        rows = cur.fetchall()
+    result = []
+    for row in rows:
+        d = dict(row)
+        d["active"] = bool(d.get("active", 1))
+        d["pay_enabled"] = bool(d.get("pay_enabled", 0))
+        result.append(d)
+    return result
+
+
+def get_offer_by_id(oid: str) -> Optional[dict]:
+    with _lock:
+        cur = _get_conn().execute("SELECT * FROM offers WHERE id=?", (oid,))
+        row = cur.fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    d["active"] = bool(d.get("active", 1))
+    d["pay_enabled"] = bool(d.get("pay_enabled", 0))
+    return d
+
+
+def deactivate_offer(oid: str):
+    with _lock:
+        _get_conn().execute("UPDATE offers SET active=0 WHERE id=?", (oid,))
+        _get_conn().commit()
+
+
+def get_my_offers(author_id: int, active_only: bool = True) -> list:
+    with _lock:
+        if active_only:
+            cur = _get_conn().execute(
+                "SELECT * FROM offers WHERE author_id=? AND active=1 ORDER BY created_at DESC",
+                (author_id,),
+            )
+        else:
+            cur = _get_conn().execute(
+                "SELECT * FROM offers WHERE author_id=? ORDER BY created_at DESC",
+                (author_id,),
+            )
+        rows = cur.fetchall()
+    result = []
+    for row in rows:
+        d = dict(row)
+        d["active"] = bool(d.get("active", 1))
+        d["pay_enabled"] = bool(d.get("pay_enabled", 0))
+        result.append(d)
+    return result
 
 
 def catalog_remove_company(city: str, index: int):

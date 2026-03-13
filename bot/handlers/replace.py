@@ -16,6 +16,7 @@ from keyboards import (
     notify_supervisor_kb,
     main_menu_kb,
     menu_quick_kb,
+    offers_menu_kb,
 )
 
 
@@ -34,6 +35,15 @@ def _filter_for_user(replacements: list, uid: int) -> list:
 async def act_replace(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query or query.data != "act:replace":
+        return
+    await query.answer()
+    await query.edit_message_text("Выйду на замену:", reply_markup=offers_menu_kb())
+
+
+async def replace_list_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Список замен (старый сценарий)"""
+    query = update.callback_query
+    if not query or query.data != "replace:list":
         return
     await query.answer()
     uid = query.from_user.id if query.from_user else 0
@@ -144,6 +154,12 @@ async def confirm_take(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Смена: {r.get('shift')}\n"
         f"Дата: {r.get('date_text')}\n"
         f"Объект: {r.get('object')}\n\n"
+        + (
+            f"💰 Доплата: {r.get('pay_amount_byn') or '—'} BYN\n"
+            f"⚠ Будьте осторожны с оплатами.\n\n"
+            if r.get("pay_enabled")
+            else ""
+        )
         f"Принять или отклонить?"
     )
     await query.edit_message_text(
@@ -195,7 +211,7 @@ async def creator_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Кого заменяют: автора объявления или друга.
     subject_id = r.get("for_friend_id") or author_id
     subject_user = storage.get_user(int(subject_id)) or {}
-    # Данные пользователей (ФИО + куратор).
+    # Данные пользователей (ФИО + администратор).
     author_user = storage.get_user(author_id) or {}
     taker_user = storage.get_user(taker_id) or {}
     subject_full = subject_user.get("full_name") or subject_user.get("name") or ""
@@ -204,6 +220,8 @@ async def creator_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
     taker_sup = storage.get_supervisor_by_id(taker_user.get("supervisor_id") or 0) or {}
     subject_sup_name = subject_sup.get("title") or "—"
     taker_sup_name = taker_sup.get("title") or "—"
+    subject_trust = subject_user.get("trust_score", 50)
+    taker_trust = taker_user.get("trust_score", 50)
 
     contact_taker = f"@{taker_username}" if taker_username else f"ID: {taker_id}"
     contact_author = f"@{author_username}" if author_username else f"ID: {author_id}"
@@ -213,11 +231,14 @@ async def creator_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Дата: {r.get('date_text')}\n"
         f"Объект: {r.get('object')}\n"
     )
+    if r.get("pay_enabled"):
+        base_info += f"💰 Доплата: {r.get('pay_amount_byn') or '—'} BYN\n⚠ Будьте осторожны с оплатами.\n"
     msg_author = (
         f"✅ Замена согласована.\n\n"
         f"{base_info}\n"
         f"Заменяющий: {taker_full} ({contact_taker})\n"
-        f"Куратор заменяющего: {taker_sup_name}\n\n"
+        f"Администратор заменяющего: {taker_sup_name}\n\n"
+        f"Уровень доверия заменяющего: {taker_trust}/100\n\n"
         f"Свяжитесь с заменяющим: {contact_taker}\n"
         f"Можно предупредить своего администратора."
     )
@@ -225,7 +246,8 @@ async def creator_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Автор принял вашу заявку.\n\n"
         f"{base_info}\n"
         f"Кого заменяете: {subject_full} ({contact_author})\n"
-        f"Куратор: {subject_sup_name}\n\n"
+        f"Администратор: {subject_sup_name}\n\n"
+        f"Уровень доверия автора: {subject_trust}/100\n\n"
         f"Свяжитесь с автором: {contact_author}\n"
         f"Ожидайте начала смены."
     )
@@ -395,6 +417,29 @@ async def taker_refuse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Смена уже началась, отказаться от замены нельзя.", show_alert=True)
         return
     author_id = r.get("author_id")
+    # Доверие: штраф за отказ того, кто принял/подал заявку (uid).
+    try:
+        from datetime import date, timedelta
+
+        u = storage.get_user(int(uid)) or {"telegram_id": int(uid)}
+        trust = float(u.get("trust_score", 50) or 50)
+        trust = max(0.0, min(100.0, trust - 10.0))
+        u["trust_score"] = trust
+
+        today = date.today().isoformat()
+        if u.get("daily_refuse_date") != today:
+            u["daily_refuse_date"] = today
+            u["daily_refuse_count"] = 0
+        u["daily_refuse_count"] = int(u.get("daily_refuse_count", 0) or 0) + 1
+
+        # Автобан: 2 отказа за сутки → бан 7 дней + доп. штраф доверия -15.
+        if int(u["daily_refuse_count"]) >= 2:
+            u["banned_until"] = (date.today() + timedelta(days=7)).isoformat()
+            trust2 = float(u.get("trust_score", 50) or 50)
+            u["trust_score"] = max(0.0, min(100.0, trust2 - 15.0))
+        storage.save_user(int(uid), u)
+    except Exception:
+        pass
     r["confirmed"] = False
     r["taken_by_id"] = None
     r["taken_by_username"] = None
@@ -427,6 +472,7 @@ async def undo_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if r.get("start_notified"):
         await query.answer("Смена уже началась, отменить подтверждение нельзя.", show_alert=True)
         return
+    taker_id = r.get("taken_by_id")
     r["confirmed"] = False
     r["taken_by_id"] = None
     r["taken_by_username"] = None
@@ -434,6 +480,7 @@ async def undo_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("Подтверждение отменено, замена снова в списке.")
     await query.message.reply_text("Главное меню:", reply_markup=main_menu_kb())
     try:
-        await context.bot.send_message(chat_id=taker_id, text="Автор отменил подтверждение. Замена снова в списке.")
+        if taker_id:
+            await context.bot.send_message(chat_id=taker_id, text="Автор отменил подтверждение. Замена снова в списке.")
     except Exception:
         pass

@@ -2,6 +2,7 @@
 """Клавиатуры бота — компактные inline-кнопки."""
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+import json
 
 import storage
 
@@ -49,8 +50,8 @@ def positions_kb(city: str, company: str, object_name: str):
 def main_menu_kb():
     """Главное меню пользователя."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔍 Найти замену", callback_data="act:find")],
-        [InlineKeyboardButton("🔄 Заменить", callback_data="act:replace")],
+        [InlineKeyboardButton("🔍 Мне нужна замена", callback_data="act:find")],
+        [InlineKeyboardButton("🔄 Выйду на замену", callback_data="act:replace")],
         [
             InlineKeyboardButton("👤 Профиль", callback_data="menu:profile"),
             InlineKeyboardButton("⚙️ Настройки", callback_data="menu:settings"),
@@ -178,11 +179,23 @@ def confirm_create_kb(rid: str, is_edit: bool = False):
     if is_edit:
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Обновить", callback_data=f"update:{rid}")],
+            [InlineKeyboardButton("💰 Доплата", callback_data=f"reppay:toggle:{rid}")],
             [InlineKeyboardButton("« Отмена", callback_data="back:main")],
         ])
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Опубликовать", callback_data=f"publish:{rid}")],
+        [InlineKeyboardButton("💰 Доплата", callback_data=f"reppay:toggle:{rid}")],
         [InlineKeyboardButton("« Отмена", callback_data="back:main")],
+    ])
+
+
+def replacement_pay_kb(rid: str, enabled: bool, amount: float | None):
+    label = "💰 Доплата: включена" if enabled else "💰 Доплата: выключена"
+    amount_label = f"Сумма: {amount} BYN" if amount else "Сумма: —"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data=f"reppay:toggle:{rid}")],
+        [InlineKeyboardButton(amount_label + " (ввести)", callback_data=f"reppay:set:{rid}")],
+        [InlineKeyboardButton("« Назад", callback_data=f"reppay:back:{rid}")],
     ])
 
 
@@ -229,6 +242,151 @@ def take_confirm_kb(rid: str):
         [InlineKeyboardButton("✅ Хочу заменить", callback_data=f"confirm_take:{rid}")],
         [InlineKeyboardButton("❌ Отмена", callback_data="back:main")],
     ])
+
+
+def offers_menu_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Список замен", callback_data="replace:list")],
+        [InlineKeyboardButton("➕ Предложить выйти на замену", callback_data="offers:create")],
+        [InlineKeyboardButton("🙋 Готовы выйти на замену (список)", callback_data="offers:list")],
+        [InlineKeyboardButton("📌 Мои предложения", callback_data="offers:mine")],
+        [InlineKeyboardButton("« В меню", callback_data="back:main")],
+    ])
+
+
+def offer_shift_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Дневная", callback_data="offer:shift:day")],
+        [InlineKeyboardButton("Ночная", callback_data="offer:shift:night")],
+        [InlineKeyboardButton("« Назад", callback_data="offers:menu")],
+    ])
+
+
+def offer_calendar_kb(year: int, month: int, shift_key: str, single: int, step: int = 0):
+    \"\"\"Календарь для offers. callback: offerdate:YYYY:MM:DD:shift:single:step\"\"\"
+    import calendar
+    from datetime import datetime
+
+    cal = calendar.Calendar(firstweekday=0)
+    days = list(cal.itermonthdays(year, month))
+    header = [InlineKeyboardButton(f\"{year} / {month}\", callback_data=\"noop\")]
+
+    weekdays = [\"Пн\", \"Вт\", \"Ср\", \"Чт\", \"Пт\", \"Сб\", \"Вс\"]
+    header_row = [InlineKeyboardButton(d, callback_data=\"noop\") for d in weekdays]
+    rows = [header, header_row]
+
+    row = []
+    now = datetime.now()
+    for d in days:
+        if d == 0:
+            row.append(InlineKeyboardButton(\" \", callback_data=\"noop\"))
+        else:
+            if year == now.year and month == now.month and d < now.day:
+                row.append(InlineKeyboardButton(str(d), callback_data=\"noop\"))
+            else:
+                cb = f\"offerdate:{year}:{month}:{d}:{shift_key}:{single}:{step}\"
+                row.append(InlineKeyboardButton(str(d), callback_data=cb))
+        if len(row) == 7:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+
+    nav = []
+    # текущий месяц и 2 вперёд
+    min_year, min_month = now.year, now.month
+    if now.month <= 10:
+        max_year, max_month = now.year, now.month + 2
+    else:
+        max_year = now.year + 1
+        max_month = (now.month + 2) - 12
+    if (year, month) > (min_year, min_month):
+        prev_year, prev_month = year, month - 1
+        if prev_month == 0:
+            prev_year -= 1
+            prev_month = 12
+        nav.append(InlineKeyboardButton(\"◀\", callback_data=f\"offercal:{prev_year}:{prev_month}:{shift_key}:{single}:{step}\"))
+    nav.append(InlineKeyboardButton(\"« Назад\", callback_data=\"offers:menu\"))
+    if (year, month) < (max_year, max_month):
+        next_year, next_month = year, month + 1
+        if next_month == 13:
+            next_year += 1
+            next_month = 1
+        nav.append(InlineKeyboardButton(\"▶\", callback_data=f\"offercal:{next_year}:{next_month}:{shift_key}:{single}:{step}\"))
+    rows.append(nav)
+    return InlineKeyboardMarkup(rows)
+
+
+def offers_list_kb(offers: list, page: int = 0, per_page: int = 5):
+    start = page * per_page
+    chunk = offers[start : start + per_page]
+    rows = []
+    for o in chunk:
+        oid = o.get("id", "")
+        date_text = o.get("date_text") or ""
+        shift = "Дневная" if o.get("shift_key") == "day" else "Ночная"
+        try:
+            pos = json.loads(o.get("positions_json") or "[]")
+            if not isinstance(pos, list):
+                pos = []
+        except Exception:
+            pos = []
+        pos_text = ", ".join(pos[:2]) + ("…" if len(pos) > 2 else "")
+        label = f"{shift} | {date_text} | {pos_text or '—'}"
+        if len(label) > 55:
+            label = label[:52] + "..."
+        rows.append([InlineKeyboardButton(label, callback_data=f"noop")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀", callback_data=f"offersp:{page-1}"))
+    nav.append(InlineKeyboardButton("« Назад", callback_data="offers:menu"))
+    if start + per_page < len(offers):
+        nav.append(InlineKeyboardButton("▶", callback_data=f"offersp:{page+1}"))
+    rows.append(nav)
+    return InlineKeyboardMarkup(rows)
+
+
+def offer_positions_kb(pending: dict):
+    uid = pending.get("author_id")
+    user = storage.get_user(int(uid)) if uid else {}
+    positions = storage.get_positions(user.get("city"), user.get("company"), user.get("object")) if user else []
+    selected = set(pending.get("positions") or [])
+    rows = []
+    for i, p in enumerate(positions[:40]):
+        mark = "✅" if p in selected else "☑️"
+        rows.append([InlineKeyboardButton(f"{mark} {p}", callback_data=f"offerpos:toggle:{i}")])
+    rows.append([InlineKeyboardButton("✅ Готово", callback_data="offerpos:done")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="offers:menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def offer_confirm_kb(oid: str):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Опубликовать", callback_data=f"offerpub:{oid}")],
+        [InlineKeyboardButton("💰 Доплата", callback_data=f"offerpay:toggle:{oid}")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="offers:menu")],
+    ])
+
+
+def offer_pay_kb(oid: str, enabled: bool, amount: float | None):
+    label = "💰 Доплата: включена" if enabled else "💰 Доплата: выключена"
+    amount_label = f"Сумма: {amount} BYN" if amount else "Сумма: —"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data=f"offerpay:toggle:{oid}")],
+        [InlineKeyboardButton(amount_label + " (ввести)", callback_data=f"offerpay:set:{oid}")],
+        [InlineKeyboardButton("« Назад", callback_data=f"offerpay:back:{oid}")],
+    ])
+
+
+def my_offers_kb(offers: list):
+    rows = []
+    for o in offers[:20]:
+        oid = o.get("id", "")
+        date_text = o.get("date_text") or ""
+        shift = "Дневная" if o.get("shift_key") == "day" else "Ночная"
+        rows.append([InlineKeyboardButton(f"🗑 {shift} | {date_text}", callback_data=f"offer:off:{oid}")])
+    rows.append([InlineKeyboardButton("« Назад", callback_data="offers:menu")])
+    return InlineKeyboardMarkup(rows)
 
 
 def creator_decide_kb(rid: str):
@@ -405,6 +563,7 @@ def admin_main_kb():
         [InlineKeyboardButton("📋 Тикеты", callback_data="admin:tickets")],
         [InlineKeyboardButton("👥 Пользователи", callback_data="admin:users")],
         [InlineKeyboardButton("👨‍💼 Администраторы", callback_data="admin:supervisors")],
+        [InlineKeyboardButton("⭐ Отзывы (модерация)", callback_data="admin:reviews")],
         [InlineKeyboardButton("♻️ Сброс пользователей", callback_data="admin:resetusers")],
         [InlineKeyboardButton("✅ Проверка объектов (чаты)", callback_data="admin:objaccess")],
         [InlineKeyboardButton("📨 Дайджест сейчас", callback_data="admin:digestnow")],
@@ -416,6 +575,36 @@ def admin_main_kb():
             InlineKeyboardButton("🚫 Баны поддержки", callback_data="admin:banned"),
         ],
         [InlineKeyboardButton("🚪 Выйти из админки", callback_data="admin:exit")],
+    ])
+
+
+def admin_reviews_list_kb(reviews: list, page: int, total: int, per_page: int = 5):
+    rows = []
+    start = page * per_page
+    chunk = reviews[start : start + per_page]
+    for r in chunk:
+        rid = r.get("id")
+        rating = r.get("rating", 0)
+        uid = r.get("user_id")
+        short = (r.get("text") or "").strip().replace("\n", " ")
+        if len(short) > 30:
+            short = short[:27] + "..."
+        label = f"{rating}★ | {uid} | {short or '—'}"
+        rows.append([InlineKeyboardButton(label, callback_data=f"admin:review:{rid}")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀", callback_data=f"admin:reviewsp:{page-1}"))
+    nav.append(InlineKeyboardButton("« Назад", callback_data="admin:back"))
+    if start + per_page < total:
+        nav.append(InlineKeyboardButton("▶", callback_data=f"admin:reviewsp:{page+1}"))
+    rows.append(nav)
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_review_detail_kb(rid: int):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑 Удалить отзыв", callback_data=f"admin:reviewdel:{rid}")],
+        [InlineKeyboardButton("« К списку", callback_data="admin:reviews")],
     ])
 
 
@@ -519,6 +708,7 @@ def admin_catalog_city_menu_kb(city_idx: int):
         [InlineKeyboardButton("🏢 Компании", callback_data=f"cat:companies:{city_idx}")],
         [InlineKeyboardButton("📍 Объекты", callback_data=f"cat:objselect:{city_idx}")],
         [InlineKeyboardButton("👤 Позиции", callback_data=f"cat:posselect:{city_idx}")],
+        [InlineKeyboardButton("✏️ Переименовать город", callback_data=f"cat:ren:city:{city_idx}")],
         [InlineKeyboardButton("🗑 Удалить город", callback_data=f"cat:delcity:{city_idx}")],
         [InlineKeyboardButton("« К городам", callback_data="admin:catalog")],
     ])
@@ -554,17 +744,26 @@ def admin_catalog_list_kb(city_idx: int, kind: str, items: list, company_idx: in
     if kind == "companies":
         for i, name in enumerate(items):
             short = name[:25] + "…" if len(name) > 25 else name
-            rows.append([InlineKeyboardButton(f"🗑 {short}", callback_data=f"cat:del:companies:{city_idx}:{i}")])
+            rows.append([
+                InlineKeyboardButton(f"✏️ {short}", callback_data=f"cat:ren:company:{city_idx}:{i}"),
+                InlineKeyboardButton("🗑", callback_data=f"cat:del:companies:{city_idx}:{i}"),
+            ])
         rows.append([InlineKeyboardButton("➕ Добавить", callback_data=f"cat:add:companies:{city_idx}")])
     elif kind == "objects":
         for i, name in enumerate(items):
             short = name[:25] + "…" if len(name) > 25 else name
-            rows.append([InlineKeyboardButton(f"🗑 {short}", callback_data=f"cat:del:objects:{city_idx}:{company_idx}:{i}")])
+            rows.append([
+                InlineKeyboardButton(f"✏️ {short}", callback_data=f"cat:ren:object:{city_idx}:{company_idx}:{i}"),
+                InlineKeyboardButton("🗑", callback_data=f"cat:del:objects:{city_idx}:{company_idx}:{i}"),
+            ])
         rows.append([InlineKeyboardButton("➕ Добавить", callback_data=f"cat:add:objects:{city_idx}:{company_idx}")])
     else:
         for i, name in enumerate(items):
             short = name[:25] + "…" if len(name) > 25 else name
-            rows.append([InlineKeyboardButton(f"🗑 {short}", callback_data=f"cat:del:positions:{city_idx}:{company_idx}:{object_idx}:{i}")])
+            rows.append([
+                InlineKeyboardButton(f"✏️ {short}", callback_data=f"cat:ren:pos:{city_idx}:{company_idx}:{object_idx}:{i}"),
+                InlineKeyboardButton("🗑", callback_data=f"cat:del:positions:{city_idx}:{company_idx}:{object_idx}:{i}"),
+            ])
         rows.append([InlineKeyboardButton("➕ Добавить", callback_data=f"cat:add:positions:{city_idx}:{company_idx}:{object_idx}")])
     rows.append([InlineKeyboardButton("« Назад", callback_data=f"cat:city:{city_idx}")])
     return InlineKeyboardMarkup(rows)
@@ -688,12 +887,12 @@ def admin_users_list_kb(users_page: list, page: int, total: int, per_page: int =
         if u.get("banned_until"):
             rows.append([
                 InlineKeyboardButton(f"🔓 {short}", callback_data=f"admin:userunban:{uid}"),
-                InlineKeyboardButton("BAN", callback_data="noop"),
+                InlineKeyboardButton("👤 Профиль", callback_data=f"admin:userprofile:{uid}"),
             ])
         else:
             rows.append([
                 InlineKeyboardButton(f"🚫 {short}", callback_data=f"admin:userban:{uid}"),
-                InlineKeyboardButton("OK", callback_data="noop"),
+                InlineKeyboardButton("👤 Профиль", callback_data=f"admin:userprofile:{uid}"),
             ])
     # Навигация
     start = page * per_page
@@ -705,6 +904,29 @@ def admin_users_list_kb(users_page: list, page: int, total: int, per_page: int =
     rows.append(nav)
     rows.append([InlineKeyboardButton("🔎 Фильтр по объекту", callback_data="admin:users:filterobj")])
     return InlineKeyboardMarkup(rows)
+
+
+def admin_user_profile_kb(uid: int):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⚠ Предупреждение", callback_data=f"admin:warn:{uid}"),
+            InlineKeyboardButton("✉ Сообщение", callback_data=f"admin:msg:{uid}"),
+        ],
+        [
+            InlineKeyboardButton("➕ Доверие +5", callback_data=f"admin:trust:+5:{uid}"),
+            InlineKeyboardButton("➖ Доверие -5", callback_data=f"admin:trust:-5:{uid}"),
+        ],
+        [
+            InlineKeyboardButton("➕ +1", callback_data=f"admin:trust:+1:{uid}"),
+            InlineKeyboardButton("➖ -1", callback_data=f"admin:trust:-1:{uid}"),
+            InlineKeyboardButton("✏️ Ввести", callback_data=f"admin:trust:set:{uid}"),
+        ],
+        [InlineKeyboardButton("« К пользователям", callback_data="admin:users")],
+    ])
+
+
+def admin_userban_cancel_kb():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin:userban_cancel")]])
 
 
 def admin_users_filter_cities_kb():
