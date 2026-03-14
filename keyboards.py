@@ -149,16 +149,12 @@ def admin_calendar_kb(year: int, month: int, prefix: str = "admincal"):
     rows = [header, header_row]
 
     row = []
-    now = datetime.now()
     for d in days:
         if d == 0:
             row.append(InlineKeyboardButton(" ", callback_data="noop"))
         else:
-            if year == now.year and month == now.month and d < now.day:
-                row.append(InlineKeyboardButton(str(d), callback_data="noop"))
-            else:
-                iso = f"{year:04d}-{month:02d}-{d:02d}"
-                row.append(InlineKeyboardButton(str(d), callback_data=f"{prefix}:date:{iso}"))
+            iso = f"{year:04d}-{month:02d}-{d:02d}"
+            row.append(InlineKeyboardButton(str(d), callback_data=f"{prefix}:date:{iso}"))
         if len(row) == 7:
             rows.append(row)
             row = []
@@ -325,10 +321,26 @@ def offers_list_kb(offers: list, page: int = 0, per_page: int = 5):
     start = page * per_page
     chunk = offers[start : start + per_page]
     rows = []
+    from datetime import date, timedelta
     for o in chunk:
         oid = o.get("id", "")
         date_text = o.get("date_text") or ""
         shift = "Дневная" if o.get("shift_key") == "day" else "Ночная"
+        # Человекочитаемая дата: Сегодня/Завтра/без года.
+        human_date = date_text
+        date_from = o.get("date_from")
+        d = None
+        if date_from:
+            try:
+                d = date.fromisoformat(date_from)
+            except Exception:
+                d = None
+        if d:
+            today = date.today()
+            if d == today:
+                human_date = "Сегодня"
+            elif d == today + timedelta(days=1):
+                human_date = "Завтра"
         try:
             pos = json.loads(o.get("positions_json") or "[]")
             if not isinstance(pos, list):
@@ -336,7 +348,7 @@ def offers_list_kb(offers: list, page: int = 0, per_page: int = 5):
         except Exception:
             pos = []
         pos_text = ", ".join(pos[:2]) + ("…" if len(pos) > 2 else "")
-        label = f"{shift} | {date_text} | {pos_text or '—'}"
+        label = f"{shift} | {human_date} | {pos_text or '—'}"
         if len(label) > 55:
             label = label[:52] + "..."
         rows.append([InlineKeyboardButton(label, callback_data="noop")])

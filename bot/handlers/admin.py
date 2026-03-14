@@ -464,7 +464,7 @@ async def usersobj_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     company = storage.get_companies(city)[company_idx]
     obj = storage.get_objects(city, company)[object_idx]
     context.user_data["admin_users_filter_obj"] = {"city": city, "company": company, "object": obj}
-    # Переоткрываем список, с сортировкой зарегистрированные→незарегистрированные.
+    # Переоткрываем список, с сортировкой зарегистрированные->незарегистрированные.
     users_all = list(storage.get_all_users().values())
     users_all = [u for u in users_all if (u.get("city"), u.get("company"), u.get("object")) == (city, company, obj)]
     def _is_registered(u: dict) -> bool:
@@ -1290,14 +1290,16 @@ async def shiftrep_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         taker_sup_name = taker_sup.get("title") or "—"
         pay = ""
         if r.get("pay_enabled"):
-            pay = f"\n  💰 Доплата: {r.get('pay_amount_byn') or '—'} BYN"
+            pay = f"\n💰 Доплата: {r.get('pay_amount_byn') or '—'} BYN"
         taker_link = taker_contact if taker_contact.startswith("@") else f"tg://user?id={taker_id}"
         subject_link = subject_contact if subject_contact.startswith("@") else f"tg://user?id={subject_id}"
         rows.append(
-            f"- {taker_name} ({taker_contact}, администратор: {taker_sup_name})\n"
-            f"  → {subject_name} ({subject_contact}, администратор: {subject_sup_name})\n"
-            f"  Позиция: {r.get('position')}{pay}\n"
-            f"  Ссылки: {taker_link} → {subject_link}"
+            f"{subject_name} ({subject_contact})\n"
+            f"Админ: {subject_sup_name}\n"
+            f"{taker_name} ({taker_contact})\n"
+            f"Админ: {taker_sup_name}{pay}\n"
+            f"Ссылки: {subject_link} -> {taker_link}\n"
+            f"Позиция: {r.get('position')}"
         )
     header = f"📊 Отчёт\nОбъект: {obj}\nСмена: {'Дневная' if shift_key=='day' else 'Ночная'}\nДата: {d_iso}\n\n"
     # Пагинация

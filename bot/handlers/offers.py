@@ -152,7 +152,8 @@ async def offer_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if shift_key == "night":
         d_to = chosen + timedelta(days=1)
         pending["date_to"] = d_to.isoformat()
-        pending["date_text"] = format_human_date_range(chosen, d_to)
+        # В тексте по умолчанию показываем только дату начала ночной смены.
+        pending["date_text"] = format_human_date(chosen)
     else:
         pending["date_to"] = chosen.isoformat()
         pending["date_text"] = format_human_date(chosen)

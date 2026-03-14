@@ -22,7 +22,7 @@ TICKETS_FILE = os.path.join(DATA_DIR, "tickets.json")
 USER_IDS_FILE = os.path.join(DATA_DIR, "user_ids.txt")
 CATALOG_FILE = os.path.join(DATA_DIR, "catalog.json")
 
-# Справочники по умолчанию: город → компания → объект → позиции
+# Справочники по умолчанию: город -> компания -> объект -> позиции
 DEFAULT_CATALOG = {
     "Гродно": {
         "Wildberies": {

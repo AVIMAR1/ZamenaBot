@@ -226,10 +226,26 @@ async def creator_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     contact_taker = f"@{taker_username}" if taker_username else f"ID: {taker_id}"
     contact_author = f"@{author_username}" if author_username else f"ID: {author_id}"
+    from datetime import date as _date
+    from bot.utils.dates import format_human_date_range
+
+    # Для согласования ночной смены показываем полный диапазон дат,
+    # во всех остальных местах по умолчанию используется дата начала.
+    date_from = r.get("date_from")
+    date_to = r.get("date_to") or r.get("date_from")
+    date_line = r.get("date_text") or ""
+    try:
+        if date_from and date_to:
+            d_from = _date.fromisoformat(date_from)
+            d_to = _date.fromisoformat(date_to)
+            date_line = format_human_date_range(d_from, d_to)
+    except Exception:
+        pass
+
     base_info = (
         f"Позиция: {r.get('position')}\n"
         f"Смена: {r.get('shift')}\n"
-        f"Дата: {r.get('date_text')}\n"
+        f"Дата: {date_line}\n"
         f"Объект: {r.get('object')}\n"
     )
     if r.get("pay_enabled"):
@@ -435,7 +451,7 @@ async def taker_refuse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 u["daily_refuse_count"] = 0
             u["daily_refuse_count"] = int(u.get("daily_refuse_count", 0) or 0) + 1
 
-            # Автобан: 2 отказа за сутки → бан 7 дней + доп. штраф доверия -15.
+            # Автобан: 2 отказа за сутки -> бан 7 дней + доп. штраф доверия -15.
             if int(u["daily_refuse_count"]) >= 2:
                 u["banned_until"] = (date.today() + timedelta(days=7)).isoformat()
                 trust2 = float(u.get("trust_score", 50) or 50)

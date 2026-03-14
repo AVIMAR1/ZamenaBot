@@ -26,7 +26,7 @@ def format_human_date_range(d_from: date, d_to: date) -> str:
     if (d_to - d_from).days == 1:
         left = format_human_date(d_from)
         right = format_human_date(d_to)
-        return f"{left} → {right}"
+        return f"{left} -> {right}"
     # Общее отображение диапазона.
     today = date.today()
     same_year = d_from.year == d_to.year == today.year

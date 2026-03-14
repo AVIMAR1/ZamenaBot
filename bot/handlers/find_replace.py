@@ -354,10 +354,11 @@ async def callback_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if shift_key == "night":
             d_to = d + timedelta(days=1)
             pending["date_to"] = d_to.isoformat()
-            pending["date_text"] = format_human_date_range(d, d_to)
+            # В текстах по умолчанию показываем только дату начала ночной смены.
+            pending["date_text"] = format_human_date(d)
         else:
             pending["date_to"] = d.isoformat()
-            pending["date_text"] = _date_text(d)
+            pending["date_text"] = format_human_date(d)
         pending["position"] = position
         context.user_data["pending_replacement"] = pending
         text = f"Проверьте:\nСмена: {pending.get('shift')}\nКем: {position}\nДата: {pending['date_text']}"
