@@ -801,6 +801,13 @@ def admin_offers_list_kb(offers: list, page: int = 0, per_page: int = 10):
         if len(label) > 60:
             label = label[:57] + "..."
         rows.append([InlineKeyboardButton(label, callback_data=f"admin:offer:{oid}")])
+    nav = [InlineKeyboardButton("« Назад", callback_data="admin:back")]
+    if page > 0:
+        nav.insert(0, InlineKeyboardButton("◀", callback_data=f"admin:offerp:{page-1}"))
+    if start + per_page < len(offers):
+        nav.append(InlineKeyboardButton("▶", callback_data=f"admin:offerp:{page+1}"))
+    rows.append(nav)
+    return InlineKeyboardMarkup(rows)
 
 
 def admin_replacement_detail_kb(rid: str):
@@ -1162,7 +1169,7 @@ def shiftreport_cities_kb():
     """Города для отчёта по смене (собственный префикс shiftrep)."""
     cities = storage.get_cities()
     rows = [[InlineKeyboardButton(c, callback_data=f"shiftrep:city:{i}")] for i, c in enumerate(cities)]
-    rows.append([InlineKeyboardButton("« Назад", callback_data="admin:shiftreport")])
+    rows.append([InlineKeyboardButton("« В админку", callback_data="admin:back")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1170,10 +1177,10 @@ def shiftreport_companies_kb(city_idx: int):
     """Компании для отчёта по смене."""
     cities = storage.get_cities()
     if city_idx < 0 or city_idx >= len(cities):
-        return InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data="admin:shiftreport")]])
+        return InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data="admin:back")]])
     companies = storage.get_companies(cities[city_idx])
     rows = [[InlineKeyboardButton(c, callback_data=f"shiftrep:company:{city_idx}:{i}")] for i, c in enumerate(companies)]
-    rows.append([InlineKeyboardButton("« К городам", callback_data="admin:shiftreport")])
+    rows.append([InlineKeyboardButton("« К городам", callback_data="admin:back")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1181,7 +1188,7 @@ def shiftreport_objects_kb(city_idx: int, company_idx: int):
     """Объекты для отчёта по смене."""
     cities = storage.get_cities()
     if city_idx < 0 or city_idx >= len(cities):
-        return InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data="admin:shiftreport")]])
+        return InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data="admin:back")]])
     companies = storage.get_companies(cities[city_idx])
     if company_idx < 0 or company_idx >= len(companies):
         return InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data=f"shiftrep:city:{city_idx}")]])
@@ -1200,7 +1207,7 @@ def shiftreport_shift_kb(city_idx: int, company_idx: int, object_idx: int):
 
 
 def shiftreport_nav_kb(page: int, total: int, per_page: int = 10):
-    nav = [InlineKeyboardButton("« Назад", callback_data="admin:shiftreport")]
+    nav = [InlineKeyboardButton("« В админку", callback_data="admin:back")]
     start = page * per_page
     if page > 0:
         nav.insert(0, InlineKeyboardButton("◀", callback_data=f"shiftrep:page:{page-1}"))
