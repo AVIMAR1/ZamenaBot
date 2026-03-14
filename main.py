@@ -165,6 +165,12 @@ async def message_dispatch(update: Update, context):
     if context.user_data.get("admin_cat_rename"):
         await admin_handlers.catalog_rename_text(update, context)
         return
+    if context.user_data.get("admin_repl_remove_id"):
+        await admin_handlers.admin_replacement_remove_text(update, context)
+        return
+    if context.user_data.get("admin_offer_remove_id"):
+        await admin_handlers.admin_offer_remove_text(update, context)
+        return
     if context.user_data.get("replacement_pay_amount_waiting"):
         rid = context.user_data.pop("replacement_pay_amount_waiting", None)
         pending = context.user_data.get("pending_replacement") or {}
@@ -452,6 +458,46 @@ async def shifts_start_job(context):
             r["start_notified"] = 1
             storage.save_replacement(r)
 
+        # Дополнительно: деактивируем предложения выйти на замену для этой смены.
+        try:
+            offers = storage.get_offers(active_only=True)
+        except Exception:
+            offers = []
+        for o in offers:
+            try:
+                if (
+                    o.get("city") != city
+                    or o.get("company") != company
+                    or o.get("object") != obj
+                    or o.get("shift_key") != shift_key
+                    or o.get("date_from") != today_iso
+                ):
+                    continue
+                author_id = o.get("author_id")
+                position_info = ""
+                try:
+                    pos = json.loads(o.get("positions_json") or "[]")
+                    if isinstance(pos, list) and pos:
+                        position_info = ", ".join(pos[:3])
+                except Exception:
+                    pass
+                text = (
+                    f"❌ Смена началась по вашему предложению выйти на замену.\n"
+                    f"Смена: {'Дневная' if shift_key == 'day' else 'Ночная'}\n"
+                    f"Дата: {today_iso}\n"
+                    f"Объект: {obj}\n"
+                    f"Позиции: {position_info or '—'}\n\n"
+                    f"Предложение больше не актуально и снято с публикации."
+                )
+                if author_id:
+                    try:
+                        await context.bot.send_message(chat_id=author_id, text=text, reply_markup=menu_quick_kb())
+                    except Exception:
+                        pass
+                storage.deactivate_offer(o.get("id"))
+            except Exception:
+                continue
+
 
 def main():
     async def post_init(app_: Application):
@@ -640,6 +686,8 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_offers, pattern="^admin:offers$"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_offers_page, pattern="^admin:offerp:"))
     app.add_handler(CallbackQueryHandler(admin_handlers.admin_offer_detail, pattern="^admin:offer:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_replacement_remove, pattern="^admin:replrm:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_offer_remove, pattern="^admin:offerrm:"))
 
     app.add_handler(CallbackQueryHandler(noop_callback, pattern="^noop"))
 

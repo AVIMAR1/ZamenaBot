@@ -49,6 +49,8 @@ from keyboards import (
     admin_review_detail_kb,
     admin_replacements_list_kb,
     admin_offers_list_kb,
+    admin_replacement_detail_kb,
+    admin_offer_detail_kb,
 )
 
 from bot.utils.access import check_object_access
@@ -767,6 +769,68 @@ async def admin_userban_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user["banned_until"] = until
     storage.save_user(target, user)
     await update.message.reply_text(f"Пользователь {target} забанен до {until}.", reply_markup=admin_main_kb())
+
+
+async def admin_replacement_remove_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Приём причины снятия замены с публикации."""
+    if not update.message:
+        return
+    rid = context.user_data.pop("admin_repl_remove_id", None)
+    if not rid:
+        return
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return
+    reason = (update.message.text or "").strip()
+    r = storage.get_replacement_by_id(rid)
+    if not r:
+        await update.message.reply_text("Замена не найдена.", reply_markup=admin_main_kb())
+        return
+    author_id = r.get("author_id")
+    r["active"] = False
+    r["requested_by_id"] = None
+    r["requested_by_username"] = None
+    r["taken_by_id"] = None
+    r["taken_by_username"] = None
+    r["confirmed"] = False
+    storage.save_replacement(r)
+    if author_id:
+        try:
+            text = "Ваша замена снята администратором."
+            if reason:
+                text += f"\nПричина: {reason}"
+            await update.get_bot().send_message(chat_id=author_id, text=text)
+        except Exception:
+            pass
+    await update.message.reply_text("Замена снята с публикации.", reply_markup=admin_main_kb())
+
+
+async def admin_offer_remove_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Приём причины снятия предложения с публикации."""
+    if not update.message:
+        return
+    oid = context.user_data.pop("admin_offer_remove_id", None)
+    if not oid:
+        return
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return
+    reason = (update.message.text or "").strip()
+    o = storage.get_offer_by_id(oid)
+    if not o:
+        await update.message.reply_text("Предложение не найдено.", reply_markup=admin_main_kb())
+        return
+    author_id = o.get("author_id")
+    storage.deactivate_offer(oid)
+    if author_id:
+        try:
+            text = "Ваше предложение выйти на замену снято администратором."
+            if reason:
+                text += f"\nПричина: {reason}"
+            await update.get_bot().send_message(chat_id=author_id, text=text)
+        except Exception:
+            pass
+    await update.message.reply_text("Предложение снято с публикации.", reply_markup=admin_main_kb())
 
 
 async def admin_userunban(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1491,7 +1555,7 @@ async def admin_replacement_detail(update: Update, context: ContextTypes.DEFAULT
         f"Статус: {status}\n"
         f"Принявший: {taker_name}\n"
     )
-    await query.edit_message_text(text, reply_markup=admin_main_kb())
+    await query.edit_message_text(text, reply_markup=admin_replacement_detail_kb(rid))
 
 
 async def admin_offers(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1561,7 +1625,41 @@ async def admin_offer_detail(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"Смена: {'Дневная' if o.get('shift_key')=='day' else 'Ночная'}\n"
         f"Даты: {o.get('date_text') or '—'}\n"
     )
-    await query.edit_message_text(text, reply_markup=admin_main_kb())
+    await query.edit_message_text(text, reply_markup=admin_offer_detail_kb(oid))
+
+
+async def admin_replacement_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Админ нажал снять замену с публикации — спрашиваем причину."""
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("admin:replrm:"):
+        return
+    uid = query.from_user.id if query.from_user else 0
+    if not _is_admin(uid):
+        return
+    await query.answer()
+    rid = query.data.replace("admin:replrm:", "", 1)
+    context.user_data["admin_repl_remove_id"] = rid
+    await query.edit_message_text(
+        "Введите причину снятия замены (одним сообщением). Она будет отправлена автору.",
+        reply_markup=admin_main_kb(),
+    )
+
+
+async def admin_offer_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Админ нажал снять предложение с публикации — спрашиваем причину."""
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("admin:offerrm:"):
+        return
+    uid = query.from_user.id if query.from_user else 0
+    if not _is_admin(uid):
+        return
+    await query.answer()
+    oid = query.data.replace("admin:offerrm:", "", 1)
+    context.user_data["admin_offer_remove_id"] = oid
+    await query.edit_message_text(
+        "Введите причину снятия предложения (одним сообщением). Она будет отправлена автору.",
+        reply_markup=admin_main_kb(),
+    )
 
 
 async def admin_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):

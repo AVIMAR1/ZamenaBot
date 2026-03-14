@@ -5,6 +5,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 import json
 
 import storage
+from bot.utils.dates import format_human_date
 
 
 def chunks(lst, n):
@@ -217,11 +218,7 @@ def replacements_list_kb(replacements: list, page: int = 0, per_page: int = 5):
             except Exception:
                 d = None
         if d:
-            today = date.today()
-            if d == today:
-                human_date = "Сегодня"
-            elif d == today + timedelta(days=1):
-                human_date = "Завтра"
+            human_date = format_human_date(d)
         short = f"{r.get('position', '')} | {r.get('shift', '')} | {human_date}"
         if len(short) > 50:
             short = short[:47] + "..."
@@ -396,11 +393,20 @@ def offer_pay_kb(oid: str, enabled: bool, amount: float | None):
 
 def my_offers_kb(offers: list):
     rows = []
+    from datetime import date
     for o in offers[:20]:
         oid = o.get("id", "")
         date_text = o.get("date_text") or ""
         shift = "Дневная" if o.get("shift_key") == "day" else "Ночная"
-        rows.append([InlineKeyboardButton(f"🗑 {shift} | {date_text}", callback_data=f"offer:off:{oid}")])
+        human_date = date_text
+        date_from = o.get("date_from")
+        if date_from:
+            try:
+                d = date.fromisoformat(date_from)
+                human_date = format_human_date(d)
+            except Exception:
+                pass
+        rows.append([InlineKeyboardButton(f"🗑 {shift} | {human_date}", callback_data=f"offer:off:{oid}")])
     rows.append([InlineKeyboardButton("« Назад", callback_data="offers:menu")])
     return InlineKeyboardMarkup(rows)
 
@@ -506,7 +512,7 @@ def my_responses_kb(responses: list, page: int = 0, per_page: int = 5):
     start = page * per_page
     chunk = responses[start : start + per_page]
     rows = []
-    from datetime import date, timedelta
+    from datetime import date
     for r in chunk:
         rid = r.get("id", "")
         date_from = r.get("date_from")
@@ -516,8 +522,7 @@ def my_responses_kb(responses: list, page: int = 0, per_page: int = 5):
         except Exception:
             d = None
         if d:
-            today = date.today()
-            human_date = "Сегодня" if d == today else ("Завтра" if d == today + timedelta(days=1) else r.get("date_text", ""))
+            human_date = format_human_date(d)
         status = "✅" if r.get("confirmed") else "⏳"
         short = f"{status} {r.get('position', '')} | {human_date}"
         if len(short) > 40:
@@ -545,9 +550,18 @@ def my_ads_kb(ads: list, page: int = 0, per_page: int = 5):
     start = page * per_page
     chunk = ads[start : start + per_page]
     rows = []
+    from datetime import date
     for r in chunk:
         rid = r.get("id", "")
-        short = f"{r.get('date_text', '')} | {r.get('position', '')}"
+        date_from = r.get("date_from")
+        human_date = r.get("date_text", "")
+        if date_from:
+            try:
+                d = date.fromisoformat(date_from)
+                human_date = format_human_date(d)
+            except Exception:
+                pass
+        short = f"{human_date} | {r.get('position', '')}"
         rows.append([InlineKeyboardButton(short, callback_data=f"myad:{rid}")])
     nav = [InlineKeyboardButton("« Назад", callback_data="menu:profile")]
     if page > 0:
@@ -735,13 +749,22 @@ def admin_replacements_list_kb(repls: list, page: int = 0, per_page: int = 10):
     start = page * per_page
     chunk = repls[start : start + per_page]
     rows = []
+    from datetime import date
     for r in chunk:
         rid = r.get("id", "")
         city = r.get("city") or ""
         company = r.get("company") or ""
         obj = r.get("object") or ""
         short_place = " / ".join([p for p in (city, company, obj) if p]) or "—"
-        label = f"{r.get('date_text', '')} | {r.get('shift', '')} | {r.get('position', '')} | {short_place}"
+        date_from = r.get("date_from")
+        human_date = r.get("date_text", "")
+        if date_from:
+            try:
+                d = date.fromisoformat(date_from)
+                human_date = format_human_date(d)
+            except Exception:
+                pass
+        label = f"{human_date} | {r.get('shift', '')} | {r.get('position', '')} | {short_place}"
         if len(label) > 60:
             label = label[:57] + "..."
         rows.append([InlineKeyboardButton(label, callback_data=f"admin:repl:{rid}")])
@@ -759,16 +782,41 @@ def admin_offers_list_kb(offers: list, page: int = 0, per_page: int = 10):
     start = page * per_page
     chunk = offers[start : start + per_page]
     rows = []
+    from datetime import date
     for o in chunk:
         oid = o.get("id", "")
         city = o.get("city") or ""
         company = o.get("company") or ""
         obj = o.get("object") or ""
         short_place = " / ".join([p for p in (city, company, obj) if p]) or "—"
-        label = f"{o.get('date_text', '')} | {'День' if o.get('shift_key')=='day' else 'Ночь'} | {short_place}"
+        date_from = o.get("date_from")
+        human_date = o.get("date_text", "")
+        if date_from:
+            try:
+                d = date.fromisoformat(date_from)
+                human_date = format_human_date(d)
+            except Exception:
+                pass
+        label = f"{human_date} | {'День' if o.get('shift_key')=='day' else 'Ночь'} | {short_place}"
         if len(label) > 60:
             label = label[:57] + "..."
         rows.append([InlineKeyboardButton(label, callback_data=f"admin:offer:{oid}")])
+
+
+def admin_replacement_detail_kb(rid: str):
+    """Клавиатура под деталями замены для админа."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑 Снять с публикации", callback_data=f"admin:replrm:{rid}")],
+        [InlineKeyboardButton("« Назад", callback_data="admin:replacements")],
+    ])
+
+
+def admin_offer_detail_kb(oid: str):
+    """Клавиатура под деталями предложения для админа."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑 Снять с публикации", callback_data=f"admin:offerrm:{oid}")],
+        [InlineKeyboardButton("« Назад", callback_data="admin:offers")],
+    ])
     nav = [InlineKeyboardButton("« Назад", callback_data="admin:back")]
     if page > 0:
         nav.insert(0, InlineKeyboardButton("◀", callback_data=f"admin:offerp:{page-1}"))
