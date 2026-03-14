@@ -47,6 +47,8 @@ from keyboards import (
     main_menu_kb,
     admin_reviews_list_kb,
     admin_review_detail_kb,
+    admin_replacements_list_kb,
+    admin_offers_list_kb,
 )
 
 from bot.utils.access import check_object_access
@@ -268,15 +270,28 @@ async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     context.user_data["admin_users_page"] = 0
     f = context.user_data.get("admin_users_filter_obj") or {}
-    users_page, total = storage.get_users_page(
-        city=f.get("city"),
-        company=f.get("company"),
-        obj=f.get("object"),
-        page=0,
-        per_page=10,
-    )
+    users_all = list(storage.get_all_users().values())
+    # Фильтр по объекту, если задан.
+    city_f, company_f, obj_f = f.get("city"), f.get("company"), f.get("object")
+    if city_f or company_f or obj_f:
+        users_all = [
+            u
+            for u in users_all
+            if (not city_f or u.get("city") == city_f)
+            and (not company_f or u.get("company") == company_f)
+            and (not obj_f or u.get("object") == obj_f)
+        ]
+    # Полностью зарегистрированные пользователи первыми.
+    def _is_registered(u: dict) -> bool:
+        return bool(u.get("city") and u.get("company") and u.get("object") and u.get("full_name") and u.get("supervisor_id"))
+
+    users_all.sort(key=lambda u: (not _is_registered(u), u.get("telegram_id") or 0))
+    total = len(users_all)
+    registered_total = sum(1 for u in users_all if _is_registered(u))
+    per_page = 10
+    users_page = users_all[:per_page]
     await query.edit_message_text(
-        f"Пользователей: {total}\nНажмите, чтобы забанить/разбанить:",
+        f"Пользователей: {total} (полностью зарегистрированы: {registered_total})\nНажмите, чтобы забанить/разбанить:",
         reply_markup=admin_users_list_kb(users_page, 0, total, per_page=10),
     )
 
@@ -376,15 +391,27 @@ async def admin_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     context.user_data["admin_users_page"] = page
     f = context.user_data.get("admin_users_filter_obj") or {}
-    users_page, total = storage.get_users_page(
-        city=f.get("city"),
-        company=f.get("company"),
-        obj=f.get("object"),
-        page=page,
-        per_page=10,
-    )
+    users_all = list(storage.get_all_users().values())
+    city_f, company_f, obj_f = f.get("city"), f.get("company"), f.get("object")
+    if city_f or company_f or obj_f:
+        users_all = [
+            u
+            for u in users_all
+            if (not city_f or u.get("city") == city_f)
+            and (not company_f or u.get("company") == company_f)
+            and (not obj_f or u.get("object") == obj_f)
+        ]
+    def _is_registered(u: dict) -> bool:
+        return bool(u.get("city") and u.get("company") and u.get("object") and u.get("full_name") and u.get("supervisor_id"))
+
+    users_all.sort(key=lambda u: (not _is_registered(u), u.get("telegram_id") or 0))
+    total = len(users_all)
+    registered_total = sum(1 for u in users_all if _is_registered(u))
+    per_page = 10
+    start = page * per_page
+    users_page = users_all[start : start + per_page]
     await query.edit_message_text(
-        f"Пользователей: {total} (стр. {page+1})\nНажмите, чтобы забанить/разбанить:",
+        f"Пользователей: {total} (стр. {page+1}, полностью зарегистрированы: {registered_total})\nНажмите, чтобы забанить/разбанить:",
         reply_markup=admin_users_list_kb(users_page, page, total, per_page=10),
     )
 
@@ -437,10 +464,19 @@ async def usersobj_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     company = storage.get_companies(city)[company_idx]
     obj = storage.get_objects(city, company)[object_idx]
     context.user_data["admin_users_filter_obj"] = {"city": city, "company": company, "object": obj}
-    # Переоткрываем список
-    users_page, total = storage.get_users_page(city=city, company=company, obj=obj, page=0, per_page=10)
+    # Переоткрываем список, с сортировкой зарегистрированные→незарегистрированные.
+    users_all = list(storage.get_all_users().values())
+    users_all = [u for u in users_all if (u.get("city"), u.get("company"), u.get("object")) == (city, company, obj)]
+    def _is_registered(u: dict) -> bool:
+        return bool(u.get("city") and u.get("company") and u.get("object") and u.get("full_name") and u.get("supervisor_id"))
+
+    users_all.sort(key=lambda u: (not _is_registered(u), u.get("telegram_id") or 0))
+    total = len(users_all)
+    registered_total = sum(1 for u in users_all if _is_registered(u))
+    per_page = 10
+    users_page = users_all[:per_page]
     await query.edit_message_text(
-        f"Фильтр: {obj}\nПользователей: {total}\nНажмите, чтобы забанить/разбанить:",
+        f"Фильтр: {obj}\nПользователей: {total} (полностью зарегистрированы: {registered_total})\nНажмите, чтобы забанить/разбанить:",
         reply_markup=admin_users_list_kb(users_page, 0, total, per_page=10),
     )
 
@@ -453,9 +489,17 @@ async def usersobj_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await query.answer()
     context.user_data.pop("admin_users_filter_obj", None)
-    users_page, total = storage.get_users_page(page=0, per_page=10)
+    users_all = list(storage.get_all_users().values())
+    def _is_registered(u: dict) -> bool:
+        return bool(u.get("city") and u.get("company") and u.get("object") and u.get("full_name") and u.get("supervisor_id"))
+
+    users_all.sort(key=lambda u: (not _is_registered(u), u.get("telegram_id") or 0))
+    total = len(users_all)
+    registered_total = sum(1 for u in users_all if _is_registered(u))
+    per_page = 10
+    users_page = users_all[:per_page]
     await query.edit_message_text(
-        f"Фильтр сброшен.\nПользователей: {total}\nНажмите, чтобы забанить/разбанить:",
+        f"Фильтр сброшен.\nПользователей: {total} (полностью зарегистрированы: {registered_total})\nНажмите, чтобы забанить/разбанить:",
         reply_markup=admin_users_list_kb(users_page, 0, total, per_page=10),
     )
 
@@ -489,9 +533,17 @@ async def admin_userban_cancel(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     await query.answer()
     context.user_data.pop("admin_userban_target", None)
-    users_page, total = storage.get_users_page(page=0, per_page=10)
+    users_all = list(storage.get_all_users().values())
+    def _is_registered(u: dict) -> bool:
+        return bool(u.get("city") and u.get("company") and u.get("object") and u.get("full_name") and u.get("supervisor_id"))
+
+    users_all.sort(key=lambda u: (not _is_registered(u), u.get("telegram_id") or 0))
+    total = len(users_all)
+    registered_total = sum(1 for u in users_all if _is_registered(u))
+    per_page = 10
+    users_page = users_all[:per_page]
     await query.edit_message_text(
-        f"Отменено.\nПользователей: {total}\nНажмите, чтобы забанить/разбанить:",
+        f"Отменено.\nПользователей: {total} (полностью зарегистрированы: {registered_total})\nНажмите, чтобы забанить/разбанить:",
         reply_markup=admin_users_list_kb(users_page, 0, total, per_page=10),
     )
 
@@ -1351,6 +1403,163 @@ async def admin_banned(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Заблокированные для поддержки:\n\n" + "\n".join(lines),
         reply_markup=admin_banned_kb(banned),
     )
+
+
+async def admin_replacements(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Список активных замен для админа."""
+    query = update.callback_query
+    if not query or query.data != "admin:replacements":
+        return
+    uid = query.from_user.id if query.from_user else 0
+    if not _is_admin(uid):
+        return
+    await query.answer()
+    repls = storage.get_replacements(active_only=True, exclude_requested=False)
+    if not repls:
+        await query.edit_message_text("Активных замен нет.", reply_markup=admin_main_kb())
+        return
+    context.user_data["admin_repl_page"] = 0
+    await query.edit_message_text(
+        f"Активные замены: {len(repls)}",
+        reply_markup=admin_replacements_list_kb(repls, page=0, per_page=10),
+    )
+
+
+async def admin_replacements_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("admin:replp:"):
+        return
+    uid = query.from_user.id if query.from_user else 0
+    if not _is_admin(uid):
+        return
+    await query.answer()
+    try:
+        page = int(query.data.replace("admin:replp:", "", 1))
+    except ValueError:
+        return
+    repls = storage.get_replacements(active_only=True, exclude_requested=False)
+    context.user_data["admin_repl_page"] = page
+    await query.edit_message_text(
+        f"Активные замены: {len(repls)} (стр. {page+1})",
+        reply_markup=admin_replacements_list_kb(repls, page=page, per_page=10),
+    )
+
+
+async def admin_replacement_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("admin:repl:"):
+        return
+    uid = query.from_user.id if query.from_user else 0
+    if not _is_admin(uid):
+        return
+    await query.answer()
+    rid = query.data.replace("admin:repl:", "", 1)
+    r = storage.get_replacement_by_id(rid)
+    if not r:
+        await query.answer("Замена не найдена.", show_alert=True)
+        return
+    author = storage.get_user(int(r.get("author_id") or 0)) or {}
+    author_name = author.get("full_name") or author.get("name") or f"ID {r.get('author_id')}"
+    author_un = author.get("username") or ""
+    author_contact = f"@{author_un}" if author_un else f"ID {r.get('author_id')}"
+    friend = None
+    if r.get("for_friend_id"):
+        friend = storage.get_user(int(r.get("for_friend_id"))) or {}
+    friend_name = friend.get("full_name") or friend.get("name") or f"ID {r.get('for_friend_id')}" if friend else "—"
+    status = "Активно"
+    if r.get("confirmed"):
+        status = "Подтверждено"
+    elif not r.get("active"):
+        status = "Снято"
+    taker = None
+    if r.get("taken_by_id"):
+        taker = storage.get_user(int(r.get("taken_by_id"))) or {}
+    taker_name = taker.get("full_name") or taker.get("name") or f"ID {r.get('taken_by_id')}" if taker else "—"
+    text = (
+        "📋 Замена\n\n"
+        f"ID: {r.get('id')}\n"
+        f"Автор: {author_name} ({author_contact})\n"
+        f"Для друга: {friend_name}\n"
+        f"Город: {r.get('city') or '—'}\n"
+        f"Компания: {r.get('company') or '—'}\n"
+        f"Объект: {r.get('object') or '—'}\n"
+        f"Позиция: {r.get('position') or '—'}\n"
+        f"Смена: {r.get('shift') or '—'}\n"
+        f"Даты: {r.get('date_text') or '—'}\n"
+        f"Статус: {status}\n"
+        f"Принявший: {taker_name}\n"
+    )
+    await query.edit_message_text(text, reply_markup=admin_main_kb())
+
+
+async def admin_offers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Список активных предложений выйти на замену для админа."""
+    query = update.callback_query
+    if not query or query.data != "admin:offers":
+        return
+    uid = query.from_user.id if query.from_user else 0
+    if not _is_admin(uid):
+        return
+    await query.answer()
+    offers = storage.get_offers(active_only=True)
+    if not offers:
+        await query.edit_message_text("Активных предложений нет.", reply_markup=admin_main_kb())
+        return
+    context.user_data["admin_offer_page"] = 0
+    await query.edit_message_text(
+        f"Активные предложения выйти на замену: {len(offers)}",
+        reply_markup=admin_offers_list_kb(offers, page=0, per_page=10),
+    )
+
+
+async def admin_offers_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("admin:offerp:"):
+        return
+    uid = query.from_user.id if query.from_user else 0
+    if not _is_admin(uid):
+        return
+    await query.answer()
+    try:
+        page = int(query.data.replace("admin:offerp:", "", 1))
+    except ValueError:
+        return
+    offers = storage.get_offers(active_only=True)
+    context.user_data["admin_offer_page"] = page
+    await query.edit_message_text(
+        f"Активные предложения: {len(offers)} (стр. {page+1})",
+        reply_markup=admin_offers_list_kb(offers, page=page, per_page=10),
+    )
+
+
+async def admin_offer_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("admin:offer:"):
+        return
+    uid = query.from_user.id if query.from_user else 0
+    if not _is_admin(uid):
+        return
+    await query.answer()
+    oid = query.data.replace("admin:offer:", "", 1)
+    o = storage.get_offer_by_id(oid)
+    if not o:
+        await query.answer("Предложение не найдено.", show_alert=True)
+        return
+    author = storage.get_user(int(o.get("author_id") or 0)) or {}
+    author_name = author.get("full_name") or author.get("name") or f"ID {o.get('author_id')}"
+    author_un = author.get("username") or o.get("author_username") or ""
+    author_contact = f"@{author_un}" if author_un else f"ID {o.get('author_id')}"
+    text = (
+        "🙋 Предложение выйти на замену\n\n"
+        f"ID: {o.get('id')}\n"
+        f"Автор: {author_name} ({author_contact})\n"
+        f"Город: {o.get('city') or '—'}\n"
+        f"Компания: {o.get('company') or '—'}\n"
+        f"Объект: {o.get('object') or '—'}\n"
+        f"Смена: {'Дневная' if o.get('shift_key')=='day' else 'Ночная'}\n"
+        f"Даты: {o.get('date_text') or '—'}\n"
+    )
+    await query.edit_message_text(text, reply_markup=admin_main_kb())
 
 
 async def admin_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):

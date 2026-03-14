@@ -170,7 +170,7 @@ async def menu_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = storage.get_user(uid) or {}
     notify_enabled = bool(user.get("notify_digest", 1))
     await query.edit_message_text(
-        "Настройки:\n\n• Редактировать профиль — город, компания, объект.\n• Уведомления — рассылка в 12:00 и 18:00 о количестве замен в списке.",
+        "Настройки:\n\n• Редактировать профиль — город, компания, объект.\n• Уведомления — дайджест по количеству замен в списке.",
         reply_markup=settings_kb(notify_enabled),
     )
 

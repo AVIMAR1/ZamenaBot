@@ -267,7 +267,7 @@ async def cmd_chatid(update: Update, context):
 
 
 async def digest_job(context):
-    """Ежедневные дайджесты в 12:00 и 18:00: сколько сейчас активных замен у пользователя."""
+    """Ежедневные дайджесты: сколько сейчас активных замен у пользователя (по МСК)."""
     all_replacements = storage.get_replacements(active_only=True)
     users = storage.get_all_users()
     sent = 0
@@ -432,6 +432,20 @@ async def shifts_start_job(context):
                         )
                     except Exception:
                         pass
+                # Пользователь, подававший заявку на замену, получает уведомление, что её не успели согласовать.
+                taker_request_id = r.get("requested_by_id") or (r.get("taken_by_id") if not r.get("confirmed") else None)
+                if taker_request_id:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=taker_request_id,
+                            text=(
+                                f"❌ Смена началась: {position} | {date_text}\n"
+                                f"Ваша заявка не была подтверждена вовремя — замена не состоялась."
+                            ),
+                            reply_markup=menu_quick_kb(),
+                        )
+                    except Exception:
+                        pass
             r["active"] = False
             r["requested_by_id"] = None
             r["requested_by_username"] = None
@@ -457,10 +471,11 @@ def main():
 
     app = Application.builder().token(config.BOT_TOKEN).post_init(post_init).build()
 
-    # Планировщик: дайджесты в 12:00 и 18:00 и отслеживание начала смен.
+    # Планировщик: дайджесты (по времени МСК) и отслеживание начала смен.
     job_queue = app.job_queue
-    job_queue.run_daily(digest_job, time=time(12, 0))
-    job_queue.run_daily(digest_job, time=time(18, 0))
+    msk = ZoneInfo("Europe/Moscow")
+    job_queue.run_daily(digest_job, time=time(12, 0, tzinfo=msk))
+    job_queue.run_daily(digest_job, time=time(18, 0, tzinfo=msk))
     # Проверка начала смен каждые 5 минут.
     job_queue.run_repeating(shifts_start_job, interval=300, first=60)
 
@@ -508,6 +523,7 @@ def main():
     app.add_handler(CallbackQueryHandler(find_handlers.replacement_pay, pattern="^reppay:"))
     app.add_handler(CallbackQueryHandler(find_handlers.callback_publish, pattern="^publish:"))
     app.add_handler(CallbackQueryHandler(find_handlers.friend_confirm, pattern="^friend:(yes|no):"))
+    app.add_handler(CallbackQueryHandler(find_handlers.friend_deny, pattern="^friend:deny:"))
     app.add_handler(CallbackQueryHandler(find_handlers.friends_choose, pattern="^friends:choose:"))
     app.add_handler(CallbackQueryHandler(find_handlers.friends_cancel, pattern="^friends:cancel:"))
     app.add_handler(CallbackQueryHandler(find_handlers.callback_update, pattern="^update:"))
@@ -618,6 +634,12 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_handlers.catalog_del_item, pattern="^cat:del:(companies|objects|positions):"))
     app.add_handler(CallbackQueryHandler(admin_handlers.catalog_add_city_prompt, pattern="^cat:addcity$"))
     app.add_handler(CallbackQueryHandler(admin_handlers.catalog_del_city, pattern="^cat:delcity:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_replacements, pattern="^admin:replacements$"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_replacements_page, pattern="^admin:replp:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_replacement_detail, pattern="^admin:repl:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_offers, pattern="^admin:offers$"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_offers_page, pattern="^admin:offerp:"))
+    app.add_handler(CallbackQueryHandler(admin_handlers.admin_offer_detail, pattern="^admin:offer:"))
 
     app.add_handler(CallbackQueryHandler(noop_callback, pattern="^noop"))
 

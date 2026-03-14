@@ -9,6 +9,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 import storage
+from bot.utils.dates import format_human_date, format_human_date_range
 from keyboards import (
     main_menu_kb,
     menu_quick_kb,
@@ -120,8 +121,8 @@ async def offer_shift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     shift_key = query.data.replace("offer:shift:", "", 1)
     pending["shift_key"] = shift_key
-    # дата: день = 1 дата, ночь = 2 даты
-    single = 1 if shift_key == "day" else 0
+    # Для дневной и ночной смен выбираем только одну дату; для ночной конец считается автоматически.
+    single = 1
     pending["single"] = single
     pending["step"] = 0
     context.user_data["pending_offer"] = pending
@@ -146,23 +147,15 @@ async def offer_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     single = int(parts[5])
     step = int(parts[6])
     chosen = date(y, m, d)
-    if step == 0:
-        pending["date_from"] = chosen.isoformat()
-        if single:
-            pending["date_to"] = chosen.isoformat()
-            pending["date_text"] = chosen.strftime("%d.%m.%Y")
-            pending["positions"] = []
-            context.user_data["pending_offer"] = pending
-            await query.edit_message_text("Выберите позиции (можно несколько):", reply_markup=offer_positions_kb(pending))
-            return
-        # ночь: выбираем конечную дату
-        pending["step"] = 1
-        context.user_data["pending_offer"] = pending
-        await query.edit_message_text("Выберите дату окончания:", reply_markup=offer_calendar_kb(y, m, shift_key, single, 1))
-        return
-    # step=1
-    pending["date_to"] = chosen.isoformat()
-    pending["date_text"] = f"{date.fromisoformat(pending['date_from']).strftime('%d.%m.%Y')} → {chosen.strftime('%d.%m.%Y')}"
+    # Один шаг для любой смены: для ночной конец считается автоматически как следующий день.
+    pending["date_from"] = chosen.isoformat()
+    if shift_key == "night":
+        d_to = chosen + timedelta(days=1)
+        pending["date_to"] = d_to.isoformat()
+        pending["date_text"] = format_human_date_range(chosen, d_to)
+    else:
+        pending["date_to"] = chosen.isoformat()
+        pending["date_text"] = format_human_date(chosen)
     pending["positions"] = []
     context.user_data["pending_offer"] = pending
     await query.edit_message_text("Выберите позиции (можно несколько):", reply_markup=offer_positions_kb(pending))

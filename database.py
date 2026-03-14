@@ -576,7 +576,8 @@ def get_replacements(active_only: bool = True, exclude_requested: bool = True) -
             cur = _get_conn().execute(
                 """SELECT * FROM replacements WHERE active=1 AND confirmed=0
                    AND (requested_by_id IS NULL OR ?=1)""",
-                (0 if exclude_requested else 1,))
+                (0 if exclude_requested else 1,),
+            )
         else:
             cur = _get_conn().execute("SELECT * FROM replacements")
         rows = cur.fetchall()
@@ -586,6 +587,8 @@ def get_replacements(active_only: bool = True, exclude_requested: bool = True) -
         d["active"] = bool(d.get("active", 1))
         d["confirmed"] = bool(d.get("confirmed", 0))
         result.append(d)
+    # Сортировка по ближайшей дате (date_from), затем по смене.
+    result.sort(key=lambda r: ((r.get("date_from") or ""), (r.get("shift_key") or "")))
     return result
 
 
@@ -1171,9 +1174,9 @@ def save_offer(offer: dict):
 def get_offers(active_only: bool = True) -> list:
     with _lock:
         if active_only:
-            cur = _get_conn().execute("SELECT * FROM offers WHERE active=1 ORDER BY created_at DESC")
+            cur = _get_conn().execute("SELECT * FROM offers WHERE active=1")
         else:
-            cur = _get_conn().execute("SELECT * FROM offers ORDER BY created_at DESC")
+            cur = _get_conn().execute("SELECT * FROM offers")
         rows = cur.fetchall()
     result = []
     for row in rows:
@@ -1181,6 +1184,8 @@ def get_offers(active_only: bool = True) -> list:
         d["active"] = bool(d.get("active", 1))
         d["pay_enabled"] = bool(d.get("pay_enabled", 0))
         result.append(d)
+    # Сортировка по ближайшей дате (date_from), затем по смене.
+    result.sort(key=lambda o: ((o.get("date_from") or ""), (o.get("shift_key") or "")))
     return result
 
 

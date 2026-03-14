@@ -12,6 +12,7 @@ from telegram.ext import ContextTypes
 import storage
 from bot.utils.access import check_object_access
 from bot.utils.notifs import notify_new_replacement
+from bot.utils.dates import format_human_date, format_human_date_range
 from keyboards import (
     shift_kb,
     positions_kb,
@@ -22,11 +23,12 @@ from keyboards import (
     menu_quick_kb,
     friend_confirm_kb,
     friends_choose_kb,
+    friend_notify_action_kb,
 )
 
 
 def _date_text(d: date) -> str:
-    return d.strftime("%d.%m.%Y")
+    return format_human_date(d)
 
 
 LOCAL_TZ = ZoneInfo("Europe/Minsk")
@@ -92,6 +94,24 @@ async def _publish_from_pending(query, context: ContextTypes.DEFAULT_TYPE, rid: 
         await notify_new_replacement(context.bot, replacement)
     except Exception:
         pass
+    # Если ищем замену для друга — уведомляем друга с возможностью отказаться.
+    friend_id = replacement.get("for_friend_id")
+    if friend_id:
+        try:
+            text = (
+                "🔔 Для вас ищут замену.\n\n"
+                f"Смена: {replacement.get('shift')}\n"
+                f"Позиция: {replacement.get('position')}\n"
+                f"Дата: {replacement.get('date_text')}\n\n"
+                "Если вы не согласны, можете отказаться:"
+            )
+            await context.bot.send_message(
+                chat_id=friend_id,
+                text=text,
+                reply_markup=friend_notify_action_kb(rid),
+            )
+        except Exception:
+            pass
     # Матчинг с offers: есть ли готовые выйти на замену под это объявление
     try:
         all_offers = storage.get_offers(active_only=True)
@@ -276,7 +296,8 @@ async def callback_position(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending["position"] = position
     pending["pos_idx"] = pos_idx
     context.user_data["pending_replacement"] = pending
-    single = 1 if pending.get("shift_key") == "day" else 0
+    # Для дневной и ночной смен выбираем только одну дату; для ночной конец считается автоматически.
+    single = 1
     from datetime import datetime
     now = datetime.now()
     await query.edit_message_text(
@@ -330,8 +351,13 @@ async def callback_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("Нельзя искать замену на смену, которая уже началась.", show_alert=True)
             return
         pending["date_from"] = d.isoformat()
-        pending["date_to"] = d.isoformat()
-        pending["date_text"] = _date_text(d)
+        if shift_key == "night":
+            d_to = d + timedelta(days=1)
+            pending["date_to"] = d_to.isoformat()
+            pending["date_text"] = format_human_date_range(d, d_to)
+        else:
+            pending["date_to"] = d.isoformat()
+            pending["date_text"] = _date_text(d)
         pending["position"] = position
         context.user_data["pending_replacement"] = pending
         text = f"Проверьте:\nСмена: {pending.get('shift')}\nКем: {position}\nДата: {pending['date_text']}"
@@ -342,7 +368,7 @@ async def callback_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=confirm_create_kb(rid, is_edit=is_edit))
         return
 
-    # Ночная смена: сначала выбираем дату начала, затем дату окончания (должна быть соседним днём).
+    # Ночная смена (старый двухшаговый режим): сначала выбираем дату начала, затем дату окончания (должна быть соседним днём).
     if step == 0:
         d_from = date(year, month, day)
         if d_from < today:
@@ -370,7 +396,7 @@ async def callback_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Ночная смена должна заканчиваться на следующий день.", show_alert=True)
         return
     pending["date_to"] = d_to.isoformat()
-    pending["date_text"] = f"{_date_text(d_from)} — {_date_text(d_to)}"
+    pending["date_text"] = format_human_date_range(d_from, d_to)
     context.user_data["pending_replacement"] = pending
     text = f"Проверьте:\nСмена: {pending.get('shift')}\nКем: {position}\nДаты: {pending['date_text']}"
     rid = pending.get("id") or str(uuid.uuid4())[:8]
@@ -476,6 +502,43 @@ async def friends_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending["for_friend_full_name"] = friend.get("full_name") or friend.get("name") or ""
     context.user_data["pending_replacement"] = pending
     await _publish_from_pending(query, context, rid, pending)
+
+
+async def friend_deny(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Друг отказывается от замены, которую для него ищут."""
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("friend:deny:"):
+        return
+    await query.answer()
+    rid = query.data.replace("friend:deny:", "", 1)
+    r = storage.get_replacement_by_id(rid)
+    if not r:
+        await query.answer("Объявление не найдено.", show_alert=True)
+        return
+    uid = query.from_user.id if query.from_user else 0
+    # Отказ может нажать только сам друг.
+    if str(r.get("for_friend_id")) != str(uid):
+        return
+    if not r.get("active"):
+        await query.answer("Объявление уже снято.", show_alert=True)
+        return
+    author_id = r.get("author_id")
+    r["active"] = False
+    r["requested_by_id"] = None
+    r["requested_by_username"] = None
+    r["taken_by_id"] = None
+    r["taken_by_username"] = None
+    storage.save_replacement(r)
+    await query.edit_message_text("Вы отказались от замены. Объявление снято.")
+    # Уведомим автора.
+    try:
+        await context.bot.send_message(
+            chat_id=author_id,
+            text="Друг отказался от замены. Объявление снято.",
+            reply_markup=menu_quick_kb(),
+        )
+    except Exception:
+        pass
 
 
 async def friends_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
